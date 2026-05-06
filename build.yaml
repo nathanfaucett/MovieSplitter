@@ -1,16 +1,17 @@
 ---
-name: "Template"
-guid: "eb5d7894-8eef-4b36-aa6f-5d124e828ce1"
-version: "1.0.0.0"
+guid: "b2be5f82-6324-4e02-a66c-6da5a160ac45"
+name: "Movie Splitter"
+version: "1.0.0.0.0"
 targetAbi: "10.9.0.0"
 framework: "net8.0"
-overview: "Short description about your plugin"
+owner: "nathanfaucett"
+overview: "Splits a joined movie file into individual episode files using subtitle cues"
 description: >
-  This is a longer description that can span more than one
-  line and include details about your plugin.
+  Splits a movie file that contains multiple joined episodes into individual
+  episode files, using subtitle cues for boundary detection. Supports a local
+  Ollama LLM for smarter detection.
 category: "General"
-owner: "jellyfin"
 artifacts:
-- "Jellyfin.Plugin.Template.dll"
+  - "MovieSplitter.dll"
 changelog: >
-  changelog
+  Initial release

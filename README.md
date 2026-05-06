@@ -1,415 +1,574 @@
-# So you want to make a Jellyfin plugin
+# Movie Splitter — Jellyfin Plugin
 
-Awesome! This guide is for you. Jellyfin plugins are written using the dotnet standard framework. What that means is you can write them in any language that implements the CLI or the DLI and can compile to net8.0. The examples on this page are in C# because that is what most of Jellyfin is written in, but F#, Visual Basic, and IronPython should all be compatible once compiled.
+Splits a single movie file that contains multiple joined episodes into individual episode files. Uses subtitle cues for boundary detection, with optional Ollama LLM support for smarter analysis.
 
-## 0. Things you need to get started
+---
 
-- [Dotnet SDK 9.0](https://dotnet.microsoft.com/en-us/download/dotnet)
+## Table of contents
 
-- An editor of your choice. Some free choices are:
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Building from source](#building-from-source)
+- [Release flow](#release-flow)
+- [Installing on a Jellyfin server](#installing-on-a-jellyfin-server)
+- [Configuration](#configuration)
+- [Detection modes](#detection-modes)
+- [Triggering a split](#triggering-a-split)
+- [Output](#output)
+- [API reference](#api-reference)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
 
-   [Visual Studio Code](https://code.visualstudio.com)
+---
 
-   [Visual Studio Community Edition](https://visualstudio.microsoft.com/downloads)
+## How it works
 
-   [Mono Develop](https://www.monodevelop.com)
+Some movies are actually miniseries or multi-episode compilations released as a single file — common with older TV recordings, foreign releases, or fan-created archives. This plugin detects where one episode ends and the next begins by analysing subtitle cues, then uses ffmpeg to losslessly split the file at those points.
 
-## 0.5. Quickstarts
+The detection pipeline is:
 
-We have a number of quickstart options available to speed you along the way.
+1. **Subtitle loading** — finds an external `.srt`/`.ass` sidecar file, or extracts an embedded subtitle track via ffmpeg
+2. **Boundary detection** — one of three strategies (see [Detection modes](#detection-modes))
+3. **Splitting** — ffmpeg remuxes each segment with `-c copy` (no re-encoding, no quality loss)
+4. **Library update** — triggers a Jellyfin library scan so the new episode files appear immediately
 
-- [Download the Example Plugin Project](https://github.com/jellyfin/jellyfin-plugin-template/tree/master/Jellyfin.Plugin.Template) from this repository, open it in your IDE and go to [step 3](https://github.com/jellyfin/jellyfin-plugin-template#3-customize-plugin-information)
+---
 
-- Install our dotnet template by [downloading the dotnet-template/content folder from this repo](https://github.com/jellyfin/jellyfin-plugin-template/tree/master/dotnet-template/content) or off of Nuget (Coming soon)
+## Requirements
 
-   ```
-   dotnet new -i /path/to/templatefolder
-   ```
+| Dependency | Version    | Notes                                                                              |
+| ---------- | ---------- | ---------------------------------------------------------------------------------- |
+| .NET SDK   | 8.0+       | For building                                                                       |
+| Jellyfin   | 10.9.0+    | Server target                                                                      |
+| ffmpeg     | Any recent | Must be on the server's `PATH`, or Jellyfin's bundled ffmpeg is used automatically |
+| Ollama     | Any        | Optional — only needed for Ollama/Composite detection modes                        |
 
-- Run this command then skip to step 4
+The movie being split **must have subtitles** — either as an external sidecar file or as an embedded track. Movies with no subtitle data will be skipped with a warning in the Jellyfin log.
 
-   ```
-      dotnet new Jellyfin-plugin -name MyPlugin
-   ```
+---
 
-If you'd rather start from scratch keep going on to step one. This assumes no specific editor or IDE and requires only the command line with dotnet in the path.
+## Building from source
 
-## 1. Initialize Your Project
+```bash
+git clone https://github.com/your-org/jellyfin-plugin-moviesplitter
+cd jellyfin-plugin-moviesplitter
+dotnet build -c Release
+```
 
-Make a new dotnet standard project with the following command, it will make a directory for itself.
+The build output will be in:
 
 ```
-dotnet new classlib -f net9.0 -n MyJellyfinPlugin
+bin/Release/net8.0/
+├── MovieSplitter.dll
+└── MovieSplitter.pdb       ← optional, include for readable stack traces
 ```
 
-Now add the Jellyfin shared libraries.
+You only need `MovieSplitter.dll` for deployment. The embedded resources (config page HTML, client JS) are compiled directly into the DLL.
 
+---
+
+## Release flow
+
+### 1. Bump the version
+
+Version is set in `MovieSplitter.csproj`. Jellyfin uses this to detect upgrades:
+
+```xml
+<PropertyGroup>
+  <Version>1.0.0.0</Version>
+  <!-- format: Major.Minor.Patch.Build -->
+</PropertyGroup>
 ```
-dotnet add package Jellyfin.Model
-dotnet add package Jellyfin.Controller
+
+| Change type                        | Example               |
+| ---------------------------------- | --------------------- |
+| Bug fix                            | `1.0.0.0` → `1.0.1.0` |
+| New feature (backwards-compatible) | `1.0.0.0` → `1.1.0.0` |
+| Breaking change or major rewrite   | `1.0.0.0` → `2.0.0.0` |
+
+### 2. Build the release DLL
+
+```bash
+dotnet build -c Release
 ```
 
-You have an autogenerated Class1.cs file. You won't be needing this, so go ahead and delete it.
+### 3. Create the release zip
 
-Navigate to the csproj that was generated, and ensure that you modify the package references to exclude assets, so that unnecessary files aren't copied over.
-Skipping this step will prevent your plugin from registering correctly.
+Jellyfin expects plugin releases as a zip with the DLL at the top level (not nested in a subfolder):
+
+```bash
+cd bin/Release/net8.0
+zip MovieSplitter_1.0.0.0.zip MovieSplitter.dll
 ```
-<ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.3">
-        <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-    <PackageReference Include="Jellyfin.Model" Version="10.11.3">
-        <ExcludeAssets>runtime</ExcludeAssets>
-    </PackageReference>
-</ItemGroup>
+
+Name the zip `PluginName_Version.zip` — Jellyfin's plugin catalogue uses this convention.
+
+### 4. Generate the checksum
+
+Jellyfin verifies plugin zips using an MD5 checksum stored in the repository manifest:
+
+```bash
+# Linux / macOS
+md5sum MovieSplitter_1.0.0.0.zip
+
+# Windows PowerShell
+Get-FileHash MovieSplitter_1.0.0.0.zip -Algorithm MD5 | Select-Object Hash
 ```
-Note: Ensure the package reference version matches the install version of jellyfin server, otherwise the plugin will show as NotSupported.
 
-## 2. Set Up the Basics
+### 5. Update the plugin manifest
 
-There are a few mandatory classes you'll need for a plugin so we need to make them.
+If you are hosting a plugin catalogue (for one-click install from the Jellyfin UI), update `manifest.json` in your catalogue repository:
 
-### PluginConfiguration
-
-Create a folder named "Configuration", and a PluginConfiguration.cs file inside.
-
-You can call it whatever you'd like really. This class is used to hold settings your plugin might need. We can leave it empty for now. This class should inherit from `MediaBrowser.Model.Plugins.BasePluginConfiguration`
-
-It should look something like the following:
-```c#
-    using MediaBrowser.Model.Plugins;
-    
-    namespace MyJellyfinPlugin.Configuration;
-    class PluginConfiguration : BasePluginConfiguration
+```json
+[
     {
-        
-    }
-```
-
-### Plugin
-
-This is the main class for your plugin and will reside in the root of your project. It will define your name, version and Id. It should inherit from `MediaBrowser.Common.Plugins.BasePlugin<PluginConfiguration>`
-
-It should look something like the following:
-```c#
-    using MediaBrowser.Common.Plugins;
-    using MyJellyfinPlugin.Configuration;
-    
-    namespace MyJellyfinPlugin;
-    
-    class Plugin : BasePlugin<PluginConfiguration>
-    {
-        
-    }
-```
-
-Note: If you called your PluginConfiguration class something different, you need to put that between the <>
-
-### Implement Required Properties
-
-The Plugin class needs a few properties implemented before it can work correctly.
-
-It needs an override on ID, an override on Name, and a constructor that follows a specific model. To get started you can use the following section.
-
-```c#
-public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer) : base(applicationPaths, xmlSerializer){}
-public override string Name => throw new System.NotImplementedException();
-public override Guid Id => Guid.Parse("");
-```
-
-## 3. Customize Plugin Information
-
-You need to populate some of your plugin's information. Go ahead a put in a string of the Name you've overridden name, and generate a GUID
-
-- **Windows Users**: you can use the Powershell command `New-Guid`, `[guid]::NewGuid()` or the Visual Studio GUID generator
-
-- **Linux and OS X Users**: you can use the Powershell Core command `New-Guid` or this command from your shell of choice:
-
-   ```bash
-   od -x /dev/urandom | head -n1 | awk '{OFS="-"; srand($6); sub(/./,"4",$5); sub(/./,substr("89ab",1+rand()*4,1),$6); print $2$3,$4,$5,$6,$7$8$9}'
-   ```
-
-or
-
-   ```bash
-   uuidgen
-   ```
-
-- Place that guid inside the `Guid.Parse("")` quotes to define your plugin's ID.
-
-## 4. Adding Functionality
-
-Congratulations, you now have everything you need for a perfectly functional functionless Jellyfin plugin! You can try it out right now if you'd like by compiling it, then placing the dll you generate in a subfolder (named after your plugin for example) within the plugins folder under your Jellyfin directory (Normally C:\Users\{YourUserName}\AppData\Local\jellyfin\plugins). If you want to try and hook it up to a debugger make sure you copy the generated PDB file alongside it.
-
-Most people aren't satisfied with just having an entry in a menu for their plugin, most people want to have some functionality, so lets look at how to add it.
-
-### 4a. Implement Interfaces
-
-If the functionality you are trying to add is functionality related to something that Jellyfin has an interface for you're in luck. Jellyfin uses some automatic discovery and injection to allow any interfaces you implement in your plugin to be available in Jellyfin.
-
-Here's some interfaces you could implement for common use cases:
-
-- **IAuthenticationProvider** - Allows you to add an authentication provider that can authenticate a user based on a name and a password, but that doesn't expect to deal with local users.
-- **IBaseItemComparer** - Allows you to add sorting rules for dealing with media that will show up in sort menus
-- **IIntroProvider** - Allows you to play a piece of media before another piece of media (i.e. a trailer before a movie, or a network bumper before an episode of a show)
-- **IItemResolver** - Allows you to define custom media types
-- **ILibraryPostScanTask** - Allows you to define a task that fires after scanning a library
-- **IMetadataSaver** - Allows you to define a metadata standard that Jellyfin can use to write metadata
-- **IResolverIgnoreRule** - Allows you to define subpaths that are ignored by media resolvers for use with another function (i.e. you wanted to have a theme song for each tv series stored in a subfolder that could be accessed by your plugin for playback in a menu).
-- **IScheduledTask** - Allows you to create a scheduled task that will appear in the scheduled task lists on the dashboard.
-
-There are loads of other interfaces that can be used, but you'll need to poke around the API to get some info. If you're an expert on a particular interface, you should help [contribute some documentation](https://docs.jellyfin.org/general/contributing/index.html)!
-
-### 4b. Use plugin aimed interfaces to add custom functionality
-
-If your plugin doesn't fit perfectly neatly into a predefined interface, never fear, there are a set of interfaces and classes that allow your plugin to extend Jellyfin any which way you please. Here's a quick overview on how to use them
-
-- **IPluginConfigurationPage** - Allows you to have a plugin config page on the dashboard. If you used one of the quickstart example projects, a premade page with some useful components to work with has been created for you! If not you can check out this guide here for how to whip one up.
-
- **IPluginServiceRegistrator** - Will be located by Jellyfin at server startup and allows you to add services to the DI container to allow for injection in your plugin's classes later.
-
-- **IHostedService** - Allows you to run code as a background task that will be started at program startup and will remain in memory. See [Microsoft's documentation](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services?view=aspnetcore-8.0&tabs=visual-studio#ihostedservice-interface) for more information. You can make as many of these as you need; make Jellyfin aware of them with an `IPluginServiceRegistrator`. It is wildly useful for loading configs or persisting state. **Be aware that your main plugin class (IBasePlugin) cannot also be a IHostedService.**
-
-- **ControllerBase** - Allows you to define custom REST-API endpoints. This is the default ASP.NET Web-API controller. You can use it exactly as you would in a normal Web-API project. Learn more about it [here](https://docs.microsoft.com/aspnet/core/web-api/?view=aspnetcore-5.0).
-
-Likewise you might need to get data and services from the Jellyfin core, Jellyfin provides a number of interfaces you can add as parameters to your plugin constructor which are then made available in your project (you can see the 2 mandatory ones that are needed by the plugin system in the constructor as is).
-
-- **IBlurayExaminer** - Allows you to examine blu-ray folders
-- **IDtoService** - Allows you to create data transport objects, presumably to send to other plugins or to the core
-- **ILibraryManager** - Allows you to directly access the media libraries without hopping through the API
-- **ILocalizationManager** - Allows you tap into the main localization engine which governs translations, rating systems, units etc...
-- **INetworkManager** - Allows you to get information about the server's networking status
-- **IServerApplicationPaths** - Allows you to get the running server's paths
-- **IServerConfigurationManager** - Allows you to write or read server configuration data into the application paths
-- **ITaskManager** - Allows you to execute and manipulate scheduled tasks
-- **IUserManager** - Allows you to retrieve user info and user library related info
-- **IXmlSerializer** - Allows you to use the main xml serializer
-- **IZipClient** - Allows you to use the core zip client for compressing and decompressing data
-
-## 5. Create a Repository
-
-- [See blog post](https://jellyfin.org/posts/plugin-updates/)
-
-## 6. Set Up Debugging
-
-Debugging can be set up by creating tasks which will be executed when running the plugin project. The specifics on setting up these tasks are not included as they may differ from IDE to IDE. The following list describes the general process:
-
-- Compile the plugin in debug mode.
-- Create the plugin directory if it doesn't exist.
-- Copy the plugin into your server's plugin directory. The server will then execute it.
-- Make sure to set the working directory of the program being debugged to the working directory of the Jellyfin Server.
-- Start the server.
-
-Some IDEs like Visual Studio Code may need the following compile flags to compile the plugin:
-
-```shell
-dotnet build Your-Plugin.sln /property:GenerateFullPaths=true /consoleloggerparameters:NoSummary
-```
-
-These flags generate the full paths for file names and **do not** generate a summary during the build process as this may lead to duplicate errors in the problem panel of your IDE.
-
-### 6.a Set Up Debugging on Visual Studio
-
-Visual Studio allows developers to connect to other processes and debug them, setting breakpoints and inspecting the variables of the program. We can set this up following this steps:
-On this section we will explain how to set up our solution to enable debugging before the server starts.
-
-1. Right-click on the solution, And click on Add -> Existing Project...
-2. Locate Jellyfin executable in your installation folder and click on 'Open'. It is called `Jellyfin.exe`. Now The solution will have a new "Project" called Jellyfin. This is the executable, not the source code of Jellyfin.
-3. Right-click on this new project and click on 'Set up as Startup Project'
-4. Right-click on this new project and click on 'Properties'
-5. Make sure that the 'Attach' parameter is set to 'No'
-
-From now on, everytime you click on start from Visual Studio, it will start Jellyfin attached to the debugger!
-
-The only thing left to do is to compile the project as it is specified a few lines above and you are done.
-
-### 6.b Automate the Setup on Visual Studio Code
-
-Visual Studio Code allows developers to automate the process of starting all necessary dependencies to start debugging the plugin. This guide assumes the reader is familiar with the [documentation on debugging in Visual Studio Code](https://code.visualstudio.com/docs/editor/debugging) and has read the documentation in this file. It is assumed that the Jellyfin Server has already been compiled once. However, should one desire to automatically compile the server before the start of the debugging session, this can be easily implemented, but is not further discussed here.
-
-A full example, which aims to be portable may be found in this repo's `.vscode` folder.
-
-This example expects you to clone `jellyfin`, `jellyfin-web` and `jellyfin-plugin-template` under the same parent directory, though you can customize this in `settings.json`
-
-1. Create a `settings.json` file inside your `.vscode` folder, to specify common options specific to your local setup.
-   ```jsonc
-    {
-        // jellyfinDir : The directory of the cloned jellyfin server project
-        // This needs to be built once before it can be used
-        "jellyfinDir"     : "${workspaceFolder}/../jellyfin/Jellyfin.Server",
-        // jellyfinWebDir : The directory of the cloned jellyfin-web project
-        // This needs to be built once before it can be used
-        "jellyfinWebDir"  : "${workspaceFolder}/../jellyfin-web",
-        // jellyfinDataDir : the root data directory for a running jellyfin instance
-        // This is where jellyfin stores its configs, plugins, metadata etc
-        // This is platform specific by default, but on Windows defaults to
-        // ${env:LOCALAPPDATA}/jellyfin
-        "jellyfinDataDir" : "${env:LOCALAPPDATA}/jellyfin",
-        // The name of the plugin
-        "pluginName" : "Jellyfin.Plugin.Template",
-    }
-   ```
-
-1. To automate the launch process, create a new `launch.json` file for C# projects inside the `.vscode` folder. The example below shows only the relevant parts of the file. Adjustments to your specific setup and operating system may be required.
-
-   ```jsonc
-    {
-        // Paths and plugin names are configured in settings.json
-        "version": "0.2.0",
-        "configurations": [
+        "guid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "name": "Movie Splitter",
+        "description": "Splits multi-episode movie files into individual episodes using subtitle analysis.",
+        "overview": "Splits a single movie file containing multiple joined episodes into individual files.",
+        "owner": "your-org",
+        "category": "General",
+        "versions": [
             {
-                "type": "coreclr",
-                "name": "Launch",
-                "request": "launch",
-                "preLaunchTask": "build-and-copy",
-                "program": "${config:jellyfinDir}/bin/Debug/net8.0/jellyfin.dll",
-                "args": [
-                //"--nowebclient"
-                "--webdir",
-                "${config:jellyfinWebDir}/dist/"
-                ],
-                "cwd": "${config:jellyfinDir}",
+                "version": "1.0.0.0",
+                "changelog": "Initial release.",
+                "targetAbi": "10.9.0.0",
+                "sourceUrl": "https://github.com/your-org/jellyfin-plugin-moviesplitter/releases/download/v1.0.0.0/MovieSplitter_1.0.0.0.zip",
+                "checksum": "<md5 from step 4>",
+                "timestamp": "2025-01-01T00:00:00Z"
             }
         ]
     }
+]
+```
 
-   ```
+Key fields:
 
-   The `request` type is specified as `launch`, as this `launch.json` file will start the Jellyfin Server process. The `preLaunchTask` defines a task that will run before the Jellyfin Server starts. More on this later. It is important to set the `program` path to the Jellyin Server program and set the current working directory (`cwd`) to the working directory of the Jellyfin Server.
-   The `args` option allows to specify arguments to be passed to the server, e.g. whether Jellyfin should start with the web-client or without it.
+| Field       | Description                                                                |
+| ----------- | -------------------------------------------------------------------------- |
+| `guid`      | Must match `Plugin.Id` in `Plugin.cs` — never change this between releases |
+| `targetAbi` | Minimum Jellyfin version required                                          |
+| `sourceUrl` | Direct download URL to the release zip                                     |
+| `checksum`  | MD5 of the zip (not the DLL)                                               |
 
-2. Create a `tasks.json` file inside your `.vscode` folder and specify a `build-and-copy` task that will run in `sequence` order. This tasks depends on multiple other tasks and all of those other tasks can be defined as simple `shell` tasks that run commands like the `cp` command to copy a file. The sequence to run those tasks in is given below. Please note that it might be necessary to adjust the examples for your specific setup and operating system.
+### 6. Create a GitHub release
 
-   The full file is shown here - Specific sections will be discussed in depth
-    ```jsonc
-    {
-        // Paths and plugin name are configured in settings.json
-        "version": "2.0.0",
-        "tasks": [
-            {
-            // A chain task - build the plugin, then copy it to your
-            // jellyfin server's plugin directory
-            "label": "build-and-copy",
-            "dependsOrder": "sequence",
-            "dependsOn": ["build", "make-plugin-dir", "copy-dll"]
-            },
-            {
-            // Build the plugin
-            "label": "build",
-            "command": "dotnet",
-            "type": "shell",
-            "args": [
-                "publish",
-                "${workspaceFolder}/${config:pluginName}.sln",
-                "/property:GenerateFullPaths=true",
-                "/consoleloggerparameters:NoSummary"
-            ],
-            "group": "build",
-            "presentation": {
-                "reveal": "silent"
-            },
-            "problemMatcher": "$msCompile"
-            },
-            {
-                // Ensure the plugin directory exists before trying to use it
-                "label": "make-plugin-dir",
-                "type": "shell",
-                "command": "mkdir",
-                "args": [
-                "-Force",
-                "-Path",
-                "${config:jellyfinDataDir}/plugins/${config:pluginName}/"
-                ]
-            },
-            {
-                // Copy the plugin dll to the jellyfin plugin install path
-                // This command copies every .dll from the build directory to the plugin dir
-                // Usually, you probablly only need ${config:pluginName}.dll
-                // But some plugins may bundle extra requirements
-                "label": "copy-dll",
-                "type": "shell",
-                "command": "cp",
-                "args": [
-                "./${config:pluginName}/bin/Debug/net8.0/publish/*",
-                "${config:jellyfinDataDir}/plugins/${config:pluginName}/"
-                ]
+```bash
+git tag v1.0.0.0
+git push origin v1.0.0.0
+```
 
-            },
-        ]
-    }
+Create a release on GitHub and attach `MovieSplitter_1.0.0.0.zip` as a release asset. The `sourceUrl` in your manifest should point to this asset's download URL.
 
-    ```
-    1.  The "build-and-copy" task which triggers all of the other tasks
-    ```jsonc
-        {
-        // A chain task - build the plugin, then copy it to your
-        // jellyfin server's plugin directory
-        "label": "build-and-copy",
-        "dependsOrder": "sequence",
-        "dependsOn": ["build", "make-plugin-dir", "copy-dll"]
-        },
-    ```
-    2.  A build task. This task builds the plugin without generating summary, but with full paths for file names enabled.
+---
 
-        ```jsonc
-            {
-            // Build the plugin
-            "label": "build",
-            "command": "dotnet",
-            "type": "shell",
-            "args": [
-                "publish",
-                "${workspaceFolder}/${config:pluginName}.sln",
-                "/property:GenerateFullPaths=true",
-                "/consoleloggerparameters:NoSummary"
-            ],
-            "group": "build",
-            "presentation": {
-                "reveal": "silent"
-            },
-            "problemMatcher": "$msCompile"
-            },
-        ```
+## Installing on a Jellyfin server
 
-    3.  A tasks which creates the necessary plugin directory and a sub-folder for the specific plugin. The plugin directory is located below the [data directory](https://jellyfin.org/docs/general/administration/configuration.html) of the Jellyfin Server. As an example, the following path can be used for the bookshelf plugin: `$HOME/.local/share/jellyfin/plugins/Bookshelf/`
-        ```jsonc
-            {
-                // Ensure the plugin directory exists before trying to use it
-                "label": "make-plugin-dir",
-                "type": "shell",
-                "command": "mkdir",
-                "args": [
-                "-Force",
-                "-Path",
-                "${config:jellyfinDataDir}/plugins/${config:pluginName}/"
-                ]
-            },
-        ```
+There are two installation methods: via the plugin catalogue (easier, gets upgrades automatically) or manually (works without a catalogue).
 
-    4.  A tasks which copies the plugin dll which has been built in step 2.1. The file is copied into it's specific plugin directory within the server's plugin directory.
+### Method A — Plugin catalogue (recommended)
 
-        ```jsonc
-            {
-                // Copy the plugin dll to the jellyfin plugin install path
-                // This command copies every .dll from the build directory to the plugin dir
-                // Usually, you probablly only need ${config:pluginName}.dll
-                // But some plugins may bundle extra requirements
-                "label": "copy-dll",
-                "type": "shell",
-                "command": "cp",
-                "args": [
-                "./${config:pluginName}/bin/Debug/net8.0/publish/*",
-                "${config:jellyfinDataDir}/plugins/${config:pluginName}/"
-                ]
-            },
-        ```
+**1. Add the plugin repository**
 
-## Licensing
+In the Jellyfin web UI, go to:
 
-Licensing is a complex topic. This repository features a GPLv3 license template that can be used to provide a good default license for your plugin. You may alter this if you like, but if you do a permissive license must be chosen.
+```
+Dashboard → Plugins → Repositories → + (add)
+```
 
-Due to how plugins in Jellyfin work, when your plugin is compiled into a binary, it will link against the various Jellyfin binary NuGet packages. These packages are licensed under the GPLv3. Thus, due to the nature and restrictions of the GPL, the binary plugin you get will also be licensed under the GPLv3.
+Enter the URL of the `manifest.json` file for this plugin, then click **Save**.
 
-If you accept the default GPLv3 license from this template, all will be good. However if you choose a different license, please keep this fact in mind, as it might not always be obvious that an, e.g. MIT-licensed plugin would become GPLv3 when compiled.
+**2. Install the plugin**
 
-Please note that this also means making "proprietary", source-unavailable, or otherwise "hidden" plugins for public consumption is not permitted. To build a Jellyfin plugin for distribution to others, it must be under the GPLv3 or a permissive open-source license that can be linked against the GPLv3.
+```
+Dashboard → Plugins → Catalogue → find "Movie Splitter" → Install
+```
+
+**3. Restart Jellyfin**
+
+Plugin DLLs are loaded at startup. A restart is required after installing or upgrading.
+
+```bash
+# systemd
+sudo systemctl restart jellyfin
+
+# Docker
+docker restart jellyfin
+```
+
+---
+
+### Method B — Manual installation
+
+Use this if you built from source or are not using a plugin catalogue.
+
+**1. Locate the Jellyfin plugin directory**
+
+| Platform        | Default path                                             |
+| --------------- | -------------------------------------------------------- |
+| Linux (systemd) | `/var/lib/jellyfin/plugins/`                             |
+| Linux (Docker)  | Mapped volume — check your `docker run` or `compose.yml` |
+| Windows         | `%PROGRAMDATA%\Jellyfin\Server\plugins\`                 |
+| macOS           | `~/.local/share/jellyfin/plugins/`                       |
+
+**2. Create a folder for the plugin**
+
+Jellyfin expects each plugin in its own subdirectory named `PluginName_Version`:
+
+```bash
+mkdir -p /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0
+```
+
+**3. Copy the DLL**
+
+```bash
+cp bin/Release/net8.0/MovieSplitter.dll \
+   /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/
+```
+
+Your plugin directory should look like this:
+
+```
+/var/lib/jellyfin/plugins/
+└── MovieSplitter_1.0.0.0/
+    └── MovieSplitter.dll
+```
+
+**4. Set permissions** (Linux only)
+
+```bash
+chown -R jellyfin:jellyfin /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/
+chmod 755 /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/
+chmod 644 /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/MovieSplitter.dll
+```
+
+**5. Restart Jellyfin**
+
+```bash
+sudo systemctl restart jellyfin
+```
+
+**6. Verify the plugin loaded**
+
+```
+Dashboard → Plugins → My Plugins
+```
+
+"Movie Splitter" should appear with status **Active**. If it shows **Restart required**, restart the server once more.
+
+---
+
+### Upgrading
+
+**Via catalogue:** Dashboard → Plugins → My Plugins → Movie Splitter → Update (if available).
+
+**Manually:**
+
+1. Stop Jellyfin: `sudo systemctl stop jellyfin`
+2. Delete the old plugin folder: `rm -rf /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/`
+3. Create the new versioned folder and copy the new DLL (repeat steps 2–5 above)
+4. Start Jellyfin: `sudo systemctl start jellyfin`
+
+Do **not** overwrite the DLL in-place while Jellyfin is running — the runtime holds a file lock on loaded assemblies.
+
+---
+
+### Uninstalling
+
+**Via catalogue:** Dashboard → Plugins → My Plugins → Movie Splitter → Uninstall, then restart.
+
+**Manually:**
+
+```bash
+sudo systemctl stop jellyfin
+rm -rf /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/
+sudo systemctl start jellyfin
+```
+
+Plugin configuration is stored separately and will not be deleted automatically. To remove it too:
+
+```bash
+rm /var/lib/jellyfin/plugins/configurations/MovieSplitter.xml
+```
+
+---
+
+## Configuration
+
+Open **Dashboard → Plugins → My Plugins → Movie Splitter → Settings**.
+
+### Detection
+
+| Setting        | Default     | Description                             |
+| -------------- | ----------- | --------------------------------------- |
+| Detection mode | `Heuristic` | See [Detection modes](#detection-modes) |
+
+### Heuristic settings
+
+| Setting                | Default                                                   | Description                                                                                            |
+| ---------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Silence gap threshold  | `30` s                                                    | Gap between subtitle cues that signals an episode boundary                                             |
+| Minimum episode length | `10` min                                                  | Prevents very short segments from being treated as episodes                                            |
+| Cue word patterns      | `previously on,next time on,\bchapter \d+\b,\bpart \d+\b` | Comma-separated regex patterns — a subtitle line matching any of these is treated as a boundary marker |
+
+### Ollama settings
+
+| Setting           | Default                  | Description                               |
+| ----------------- | ------------------------ | ----------------------------------------- |
+| Enable Ollama     | Off                      | Must be on for Ollama and Composite modes |
+| Ollama server URL | `http://localhost:11434` | Base URL — can be a remote host           |
+| Model             | `llama3`                 | Any model installed in Ollama             |
+
+Use the **Test connection** button to verify Ollama is reachable before enabling it.
+
+### Output settings
+
+| Setting           | Default    | Description                                                                         |
+| ----------------- | ---------- | ----------------------------------------------------------------------------------- |
+| Output subfolder  | `Episodes` | Created next to the source movie file                                               |
+| Subtitle language | `eng`      | ISO 639-2 code used when searching for sidecar subtitle files, e.g. `Movie.eng.srt` |
+
+---
+
+## Detection modes
+
+### Heuristic (default)
+
+Finds boundaries using two signals in the subtitle data:
+
+- **Silence gaps** — stretches with no subtitle cues longer than the configured threshold
+- **Cue-word patterns** — subtitle lines matching phrases like "Previously on…" or "Chapter 1"
+
+No external dependencies. Fast and deterministic. Works well for content that has clear textual episode markers.
+
+### Ollama
+
+Sends subtitle cues to a local Ollama LLM in overlapping windows of 120 lines. The model is prompted to identify episode boundaries and return a JSON array of timestamps. Results are validated and filtered before use.
+
+If the Ollama server is unreachable or returns unparseable output, the detector automatically falls back to Heuristic — the task will never fail because of a network error.
+
+Recommended models:
+
+| Model     | Speed     | Notes                                |
+| --------- | --------- | ------------------------------------ |
+| `llama3`  | Medium    | Best general narrative understanding |
+| `mistral` | Fast      | Solid instruction-following          |
+| `phi3`    | Very fast | Best choice for low-resource servers |
+
+### Composite
+
+Runs both Heuristic and Ollama in sequence, then merges the results — collapsing timestamps within 15 seconds of each other into a single boundary. Best accuracy at the cost of the additional time required for the LLM pass.
+
+---
+
+## Triggering a split
+
+### From the movie detail page
+
+Open any movie in the Jellyfin web UI. The plugin injects three entry points:
+
+- **Top button row** — a "Split into episodes" button alongside Play and Watchlist
+- **Movie Splitter panel** — a section below the main buttons showing the active detector mode, with Run and Settings buttons
+- **Context menu** — a "Split into episodes" entry in the ⋮ menu on both card view and the detail page
+
+Each of these shows a confirmation step and inline progress status without navigating away from the page.
+
+### From the plugin settings page
+
+Paste a movie's Jellyfin item ID into the "Split a single movie" field and click **Split this movie**. The item ID appears in the URL when you open a movie: `…/details?id=abc123`.
+
+### From Scheduled Tasks
+
+```
+Dashboard → Scheduled Tasks → Movie Splitter → Split Movies into Episodes
+```
+
+Click the play button to process all movies in the library. Jellyfin shows a native progress bar. Use this for bulk processing after initial configuration.
+
+---
+
+## Output
+
+For a movie `The Long Film.mkv` with 3 detected boundaries:
+
+```
+The Long Film/
+└── Episodes/
+    ├── The Long Film - S01E01.mkv
+    ├── The Long Film - S01E02.mkv
+    ├── The Long Film - S01E03.mkv
+    └── The Long Film - S01E04.mkv
+```
+
+Each output file is a lossless remux (`ffmpeg -c copy`) — no re-encoding, no quality loss. All original streams are preserved: video, all audio tracks, and all subtitle tracks. After splitting, `QueueLibraryScan()` triggers a background library refresh so the new files appear in Jellyfin automatically.
+
+The source movie file is **not modified or deleted**.
+
+---
+
+## API reference
+
+Both endpoints require admin authentication (`RequiresElevation` policy — same level as the Jellyfin dashboard).
+
+### `POST /MovieSplitter/SplitItem`
+
+Splits a single movie by its Jellyfin item ID.
+
+**Query parameters**
+
+| Parameter | Type   | Description                                |
+| --------- | ------ | ------------------------------------------ |
+| `itemId`  | `Guid` | The Jellyfin item ID of the movie to split |
+
+**Success response**
+
+```json
+{ "episodesCreated": 4, "message": null }
+```
+
+**Error responses**
+
+```json
+{ "episodesCreated": 0, "message": "No subtitles found for this movie." }
+```
+
+**Example**
+
+```bash
+curl -X POST \
+  "http://jellyfin.local:8096/MovieSplitter/SplitItem?itemId=abc123" \
+  -H "Authorization: MediaBrowser Token=\"your-api-token\""
+```
+
+---
+
+### `GET /MovieSplitter/TestOllama`
+
+Probes an Ollama server to verify connectivity. Used by the Settings page "Test connection" button.
+
+**Query parameters**
+
+| Parameter   | Type     | Description                            |
+| ----------- | -------- | -------------------------------------- |
+| `ollamaUrl` | `string` | Base URL of the Ollama server to probe |
+
+**Responses**
+
+```json
+{ "ok": true,  "error": null }
+{ "ok": false, "error": "Connection refused (localhost:11434)" }
+```
+
+---
+
+## Project structure
+
+```
+MovieSplitter/
+├── Plugin.cs                          IPlugin + IHasWebPages
+├── PluginConfiguration.cs             Serialised settings (stored as XML by Jellyfin)
+├── ServiceRegistration.cs             DI registrations for the Jellyfin host
+│
+├── Api/
+│   └── MovieSplitterController.cs    REST endpoints (/MovieSplitter/*)
+│
+├── Configuration/
+│   ├── configPage.html               Dashboard settings UI (embedded resource)
+│   └── detailPagePlugin.js           Client-side detail page + context menu injection
+│
+├── Detection/
+│   ├── IBoundaryDetector.cs          Adapter interface
+│   ├── DetectorMode.cs               Heuristic / Ollama / Composite enum
+│   ├── CueWordMatcher.cs             Regex cue-word scanner
+│   ├── HeuristicBoundaryDetector.cs  Silence gap + cue-word implementation
+│   ├── CompositeBoundaryDetector.cs  Multi-detector result merger (15 s collapse window)
+│   ├── BoundaryDetectorFactory.cs    Selects correct implementation from config
+│   └── Ollama/
+│       ├── OllamaClient.cs           HTTP client for Ollama /api/generate
+│       └── OllamaBoundaryDetector.cs LLM-based implementation with automatic fallback
+│
+├── Splitting/
+│   └── FfmpegSplitter.cs             Lossless remux via ffmpeg -c copy -map 0
+│
+├── Subtitle/
+│   ├── SubtitleCue.cs                Record: Start, End, Text
+│   ├── SrtParser.cs                  SRT file parser
+│   └── SubtitleLoader.cs             Sidecar discovery + embedded track extraction
+│
+└── Tasks/
+    └── SplitMovieTask.cs             IScheduledTask orchestrator (full library scan)
+```
+
+---
+
+## Troubleshooting
+
+**Plugin does not appear in Dashboard → My Plugins**
+
+Confirm the DLL is in a correctly named subfolder (`MovieSplitter_1.0.0.0/`). Check the Jellyfin log for assembly load errors:
+
+```bash
+journalctl -u jellyfin -n 100 | grep -i "moviesplitter\|plugin"
+```
+
+Ensure the DLL targets `net8.0` and your Jellyfin server is version 10.9 or later.
+
+---
+
+**"No subtitles found" in the logs**
+
+The plugin requires subtitles. Check that either:
+
+- An external `.srt` or `.ass` file exists alongside the movie — e.g. `Movie.eng.srt` or `Movie.srt`
+- The movie container (`.mkv`) has an embedded subtitle track visible in Jellyfin's media info
+
+Also confirm the **Subtitle language** setting matches your sidecar file's language code.
+
+---
+
+**No episode boundaries detected**
+
+- Lower the **Silence gap threshold** (e.g. from 30 s to 15 s)
+- Add episode-specific cue word patterns for your content
+- Switch to **Ollama** or **Composite** mode for ambiguous content
+- Enable `Debug` logging in Jellyfin to see each candidate boundary: `Dashboard → Logs`
+
+---
+
+**Ollama connection fails**
+
+Confirm Ollama is running and accessible from the Jellyfin server:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+If Jellyfin runs in Docker, `localhost` refers to the container — use the host's IP address or a Docker network alias instead of `localhost`. Use the **Test connection** button in plugin settings to diagnose from within the server process.
+
+---
+
+**Split files do not appear in the library**
+
+Wait a minute for the background library scan to complete, then check `Dashboard → Libraries → Scan All Libraries` to trigger a manual refresh. Confirm the output subfolder is inside a path that Jellyfin is configured to monitor.
+
+---
+
+**ffmpeg not found**
+
+Confirm ffmpeg is on the PATH accessible to the Jellyfin service user:
+
+```bash
+sudo -u jellyfin which ffmpeg
+```
+
+Jellyfin's bundled ffmpeg is used automatically if available. If not, create a symlink:
+
+```bash
+ln -s /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg
+```
+
+---
+
+## License
+
+MIT

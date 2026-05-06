@@ -1,0 +1,115 @@
+name: "📦 Release & Publish Manifest"
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/*.md"
+      - "manifest.json"
+      - "build.yaml"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 1. Read current 4-part version, bump patch ────────────────────────
+      - name: Bump patch version
+        id: version
+        run: |
+          CURRENT=$(grep -E '^version:' build.yaml | sed -E 's/version: "?([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}.0"
+          echo "quad=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped: $CURRENT → $NEW_VERSION"
+
+      # ── 2. Write new version back to build.yaml ───────────────────────────
+      - name: Update build.yaml version
+        run: |
+          sed -i -E "s/^version: .*/version: \"${{ steps.version.outputs.quad }}\"/" build.yaml
+
+      # ── 3. Setup .NET 8 & build ───────────────────────────────────────────
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore & Publish
+        run: |
+          dotnet restore
+          dotnet publish -c Release -o ./publish_out
+
+      # ── 4. Package zip ────────────────────────────────────────────────────
+      - name: Create zip
+        id: zip
+        run: |
+          QUAD="${{ steps.version.outputs.quad }}"
+          ZIP_NAME="MovieSplitter_${QUAD}.zip"
+          cd publish_out
+          zip "../${ZIP_NAME}" MovieSplitter.dll
+          cd ..
+          MD5=$(md5sum "${ZIP_NAME}" | awk '{print $1}')
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "md5=${MD5}"           >> "$GITHUB_OUTPUT"
+
+      # ── 5. Create GitHub Release ──────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.quad }}"
+          name: "Movie Splitter ${{ steps.version.outputs.quad }}"
+          generate_release_notes: true
+          files: ${{ steps.zip.outputs.zip_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 6. Update manifest.json ───────────────────────────────────────────
+      - name: Update manifest.json
+        run: |
+          QUAD="${{ steps.version.outputs.quad }}"
+          ZIP_NAME="${{ steps.zip.outputs.zip_name }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/v${QUAD}/${ZIP_NAME}"
+
+          NEW_ENTRY=$(jq -n \
+            --arg ver "$QUAD" \
+            --arg abi "10.9.0.0" \
+            --arg ts  "$TIMESTAMP" \
+            --arg url "$SOURCE_URL" \
+            --arg md5 "${{ steps.zip.outputs.md5 }}" \
+            --arg log "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD)" \
+            '{
+              version:   $ver,
+              changelog: $log,
+              targetAbi: $abi,
+              sourceUrl: $url,
+              checksum:  $md5,
+              timestamp: $ts
+            }')
+
+          jq --argjson entry "$NEW_ENTRY" \
+            '.[0].versions = [$entry] + .[0].versions' \
+            manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+
+      # ── 7. Commit both files back ─────────────────────────────────────────
+      - name: Commit updated files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add build.yaml manifest.json
+          git diff --cached --quiet && echo "Nothing to commit" && exit 0
+          git commit -m "chore: release v${{ steps.version.outputs.quad }} [skip ci]"
+          git push origin HEAD:master

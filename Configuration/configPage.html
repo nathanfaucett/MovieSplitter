@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Movie Splitter</title>
+</head>
+<body>
+    <div data-role="page" class="page libraryPage noHeaderRight">
+        <div data-role="content">
+            <div class="content-primary">
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Movie Splitter</h2>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="detectorMode">Detection mode</label>
+                    <select id="detectorMode" class="emby-select-withcolor emby-select">
+                        <option value="Heuristic">Heuristic (subtitle gaps + cue words)</option>
+                        <option value="Ollama">Ollama LLM only</option>
+                        <option value="Composite">Composite (heuristic + Ollama, merged)</option>
+                    </select>
+                </div>
+
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Heuristic settings</h3>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="silenceThreshold">Silence gap threshold (seconds)</label>
+                    <input type="number" id="silenceThreshold" class="emby-input" min="5" max="300" step="1" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="minEpisodeMinutes">Minimum episode length (minutes)</label>
+                    <input type="number" id="minEpisodeMinutes" class="emby-input" min="1" max="120" step="1" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="cueWordPatterns">Cue word patterns (comma-separated regex)</label>
+                    <input type="text" id="cueWordPatterns" class="emby-input" />
+                    <div class="fieldDescription">e.g. <code>previously on,next time on,\bchapter \d+\b</code></div>
+                </div>
+
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Ollama LLM settings</h3>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label class="emby-checkbox-label">
+                        <input type="checkbox" id="ollamaEnabled" class="emby-checkbox" />
+                        <span>Enable Ollama</span>
+                    </label>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="ollamaUrl">Ollama server URL</label>
+                    <input type="text" id="ollamaUrl" class="emby-input" placeholder="http://localhost:11434" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="ollamaModel">Model name</label>
+                    <input type="text" id="ollamaModel" class="emby-input" placeholder="llama3" />
+                </div>
+
+                <div class="inputContainer">
+                    <button id="testOllama" class="emby-button emby-button-backdropfilter">Test connection</button>
+                    <span id="ollamaStatus" style="margin-left:12px;font-size:0.9em;"></span>
+                </div>
+
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Output settings</h3>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="outputSubfolder">Output subfolder name</label>
+                    <input type="text" id="outputSubfolder" class="emby-input" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="subtitleLanguage">Subtitle language code</label>
+                    <input type="text" id="subtitleLanguage" class="emby-input" placeholder="eng" maxlength="3" />
+                </div>
+
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Run</h3>
+                </div>
+
+                <div class="inputContainer">
+                    <button id="btnSave" class="emby-button button-submit">Save settings</button>
+                </div>
+
+                <div class="inputContainer" style="margin-top:1em;">
+                    <button id="btnRunAll" class="emby-button emby-button-backdropfilter">Save &amp; run on entire library</button>
+                    <div class="fieldDescription">This triggers the scheduled task immediately. Progress is visible in Dashboard → Scheduled Tasks.</div>
+                </div>
+
+                <div class="verticalSection">
+                    <h3 class="sectionTitle">Split a single movie</h3>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="singleItemId">Jellyfin item ID</label>
+                    <input type="text" id="singleItemId" class="emby-input" placeholder="Paste the item ID from the movie's info page" />
+                </div>
+                <div class="inputContainer">
+                    <button id="btnRunSingle" class="emby-button emby-button-backdropfilter">Split this movie</button>
+                    <span id="singleStatus" style="margin-left:12px;font-size:0.9em;"></span>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        const pluginId = 'b2be5f82-6324-4e02-a66c-6da5a160ac45';
+
+        async function loadConfig() {
+            const res = await ApiClient.getPluginConfiguration(pluginId);
+            document.getElementById('detectorMode').value      = res.DetectorMode              ?? 'Heuristic';
+            document.getElementById('silenceThreshold').value  = res.SilenceThresholdSeconds   ?? 30;
+            document.getElementById('minEpisodeMinutes').value = res.MinEpisodeMinutes          ?? 10;
+            document.getElementById('cueWordPatterns').value   = res.CueWordPatterns            ?? '';
+            document.getElementById('ollamaEnabled').checked   = res.OllamaEnabled              ?? false;
+            document.getElementById('ollamaUrl').value         = res.OllamaUrl                  ?? 'http://localhost:11434';
+            document.getElementById('ollamaModel').value       = res.OllamaModel                ?? 'llama3';
+            document.getElementById('outputSubfolder').value   = res.OutputSubfolder            ?? 'Episodes';
+            document.getElementById('subtitleLanguage').value  = res.SubtitleLanguage           ?? 'eng';
+        }
+
+        function collectConfig() {
+            return {
+                DetectorMode:            document.getElementById('detectorMode').value,
+                SilenceThresholdSeconds: parseFloat(document.getElementById('silenceThreshold').value),
+                MinEpisodeMinutes:       parseFloat(document.getElementById('minEpisodeMinutes').value),
+                CueWordPatterns:         document.getElementById('cueWordPatterns').value,
+                OllamaEnabled:           document.getElementById('ollamaEnabled').checked,
+                OllamaUrl:               document.getElementById('ollamaUrl').value.trim(),
+                OllamaModel:             document.getElementById('ollamaModel').value.trim(),
+                OutputSubfolder:         document.getElementById('outputSubfolder').value.trim(),
+                SubtitleLanguage:        document.getElementById('subtitleLanguage').value.trim(),
+            };
+        }
+
+        async function saveConfig() {
+            await ApiClient.updatePluginConfiguration(pluginId, collectConfig());
+            Dashboard.processPluginConfigurationUpdateResult();
+        }
+
+        async function runFullLibraryTask() {
+            await saveConfig();
+            const tasks = await ApiClient.getScheduledTasks();
+            const task  = tasks.find(t => t.Key === 'MovieSplitter_Split');
+            if (!task) {
+                Dashboard.alert('Task not found. Make sure the plugin is loaded.');
+                return;
+            }
+            await ApiClient.startScheduledTask(task.Id);
+            Dashboard.alert('Task started — check Dashboard → Scheduled Tasks for progress.');
+        }
+
+        async function runSingleItem() {
+            const itemId = document.getElementById('singleItemId').value.trim();
+            if (!itemId) {
+                document.getElementById('singleStatus').textContent = 'Enter an item ID first.';
+                return;
+            }
+            document.getElementById('singleStatus').textContent = 'Running…';
+            try {
+                const url    = ApiClient.getUrl('MovieSplitter/SplitItem', { itemId });
+                const result = await ApiClient.ajax({ type: 'POST', url, dataType: 'json' });
+                document.getElementById('singleStatus').textContent =
+                    `Done — ${result.EpisodesCreated} episode(s) created.`;
+            } catch (e) {
+                document.getElementById('singleStatus').textContent = 'Error: ' + (e.message ?? e);
+            }
+        }
+
+        async function testOllama() {
+            const url    = document.getElementById('ollamaUrl').value.trim();
+            const status = document.getElementById('ollamaStatus');
+            status.textContent = 'Testing…';
+            try {
+                const res = await ApiClient.ajax({
+                    type: 'GET',
+                    url: ApiClient.getUrl('MovieSplitter/TestOllama', { ollamaUrl: url }),
+                    dataType: 'json'
+                });
+                status.textContent = res.Ok ? '✓ Connected' : '✗ ' + res.Error;
+            } catch {
+                status.textContent = '✗ Could not reach Jellyfin API';
+            }
+        }
+
+        document.getElementById('btnSave').addEventListener('click', saveConfig);
+        document.getElementById('btnRunAll').addEventListener('click', runFullLibraryTask);
+        document.getElementById('btnRunSingle').addEventListener('click', runSingleItem);
+        document.getElementById('testOllama').addEventListener('click', testOllama);
+
+        loadConfig();
+    </script>
+</body>
+</html>
