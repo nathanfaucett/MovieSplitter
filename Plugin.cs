@@ -27,8 +27,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         },
         new PluginPageInfo
         {
-            Name = "moviesplitter.js",
-            EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.detailPagePlugin.js"
+            Name                 = "moviesplitterdetail",
+            EmbeddedResourcePath = GetType().Namespace + ".Configuration.detailPagePlugin.js",
+            EnableInMainMenu       = true,   // <-- this is the key flag
         }
     ];
 
