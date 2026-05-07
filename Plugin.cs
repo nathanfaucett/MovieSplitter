@@ -8,7 +8,7 @@ namespace MovieSplitter;
 public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     public override string Name => "Movie Splitter";
-    public override Guid Id => Guid.Parse("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+    public override Guid Id => Guid.Parse("b2be5f82-6324-4e02-a66c-6da5a160ac45");
 
     public static Plugin? Instance { get; private set; }
 

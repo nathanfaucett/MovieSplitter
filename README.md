@@ -82,7 +82,7 @@ Version is set in `MovieSplitter.csproj`. Jellyfin uses this to detect upgrades:
 
 | Change type                        | Example               |
 | ---------------------------------- | --------------------- |
-| Bug fix                            | `1.0.0.0` → `1.0.1.0` |
+| Bug fix                            | `1.0.0.0` → `1.0.0.0` |
 | New feature (backwards-compatible) | `1.0.0.0` → `1.1.0.0` |
 | Breaking change or major rewrite   | `1.0.0.0` → `2.0.0.0` |
 
@@ -122,7 +122,7 @@ If you are hosting a plugin catalogue (for one-click install from the Jellyfin U
 ```json
 [
     {
-        "guid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "guid": "b2be5f82-6324-4e02-a66c-6da5a160ac45",
         "name": "Movie Splitter",
         "description": "Splits multi-episode movie files into individual episodes using subtitle analysis.",
         "overview": "Splits a single movie file containing multiple joined episodes into individual files.",
