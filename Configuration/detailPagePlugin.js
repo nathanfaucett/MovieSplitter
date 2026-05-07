@@ -9,157 +9,152 @@ const MovieSplitterPlugin = {
     },
 
     async _splitItem(itemId, statusEl) {
-        statusEl.textContent = 'Running…';
+        statusEl.textContent = 'Running\u2026';
         statusEl.style.color = '';
         try {
             const url = ApiClient.getUrl('MovieSplitter/SplitItem', { itemId });
             const result = await ApiClient.ajax({ type: 'POST', url, dataType: 'json' });
-            statusEl.textContent = `Done — ${result.EpisodesCreated} episode(s) created.`;
+            statusEl.textContent = 'Done \u2014 ' + result.EpisodesCreated + ' episode(s) created.';
             statusEl.style.color = '#10b981';
         } catch (err) {
-            const msg = err?.response ? await err.response.text() : String(err);
-            statusEl.textContent = `Error: ${msg}`;
+            const msg = err && err.response ? (err.response.text ? err.response.text() : String(err)) : String(err);
+            statusEl.textContent = 'Error: ' + (typeof msg === 'string' ? msg : 'Unknown error');
             statusEl.style.color = '#ef4444';
         }
     },
 
     _isMovie(item) {
-        return item?.Type === 'Movie';
+        return item && item.Type === 'Movie';
     },
 
     // ── 1. Detail page section ─────────────────────────────────────────────
     //
     // Injected below the main action buttons when a movie detail page opens.
+    // All DOM manipulation uses createElement instead of innerHTML to avoid
+    // Jellyfin's translateHtml pipeline receiving non-string values.
 
     async onDetailPage(item, page) {
         if (!this._isMovie(item)) return;
 
-        const config = await this._getPluginConfig();
-        const detectorLabel = config.DetectorMode ?? 'Heuristic';
-        const ollamaNote = config.OllamaEnabled ? ' + Ollama' : '';
-
-        const section = document.createElement('div');
-        section.className = 'detailSection';
-        section.innerHTML = `
-            <h3 class="detailSectionHeader">Movie Splitter</h3>
-            <div style="
-                padding: 14px 16px;
-                background: rgba(124,58,237,0.1);
-                border: 1px solid rgba(124,58,237,0.35);
-                border-radius: 6px;
-                margin: 0 0 1em;
-            ">
-                <p style="margin:0 0 8px;font-size:0.85em;opacity:0.75;">
-                    Detector: ${detectorLabel}${ollamaNote}
-                </p>
-                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                    <button
-                        is="emby-button"
-                        class="emby-button button-submit raised"
-                        id="btnSplitDetail"
-                        style="background:#7c3aed;border:none;color:#fff;">
-                        Split into episodes
-                    </button>
-                    <button
-                        is="emby-button"
-                        class="emby-button"
-                        id="btnSplitSettings">
-                        Settings
-                    </button>
-                    <span id="splitDetailStatus" style="font-size:0.85em;"></span>
-                </div>
-            </div>
-        `;
-
-        // Insert after the main detail action buttons
-        const anchor = page.querySelector('.mainDetailButtons')
-            ?? page.querySelector('.itemDetailGalleryLink')
-            ?? page.querySelector('.detailPagePrimaryContent');
-
-        if (anchor?.parentNode) {
-            anchor.parentNode.insertBefore(section, anchor.nextSibling);
-        } else {
-            page.querySelector('.detailPageContent')?.appendChild(section);
+        let config;
+        try {
+            config = await this._getPluginConfig();
+        } catch (e) {
+            config = {};
         }
 
-        section.querySelector('#btnSplitDetail').addEventListener('click', () => {
-            const statusEl = section.querySelector('#splitDetailStatus');
-            this._splitItem(item.Id, statusEl);
-        });
+        const detectorLabel = String(config.DetectorMode || 'Heuristic');
+        const ollamaNote = config.OllamaEnabled ? ' + Ollama' : '';
 
-        section.querySelector('#btnSplitSettings').addEventListener('click', () => {
+        // Build DOM manually to stay out of Jellyfin's translateHtml pipeline
+        const section = document.createElement('div');
+        section.className = 'detailSection';
+
+        const heading = document.createElement('h3');
+        heading.className = 'detailSectionHeader';
+        heading.textContent = 'Movie Splitter';
+        section.appendChild(heading);
+
+        const panel = document.createElement('div');
+        panel.style.cssText = 'padding:14px 16px;background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.35);border-radius:6px;margin:0 0 1em;';
+
+        const note = document.createElement('p');
+        note.style.cssText = 'margin:0 0 8px;font-size:0.85em;opacity:0.75;';
+        note.textContent = 'Detector: ' + detectorLabel + ollamaNote;
+        panel.appendChild(note);
+
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;';
+
+        const btnRun = document.createElement('button');
+        btnRun.setAttribute('is', 'emby-button');
+        btnRun.className = 'emby-button button-submit raised';
+        btnRun.style.cssText = 'background:#7c3aed;border:none;color:#fff;';
+        btnRun.textContent = 'Split into episodes';
+
+        const btnSettings = document.createElement('button');
+        btnSettings.setAttribute('is', 'emby-button');
+        btnSettings.className = 'emby-button';
+        btnSettings.textContent = 'Settings';
+
+        const statusEl = document.createElement('span');
+        statusEl.style.cssText = 'font-size:0.85em;';
+
+        row.appendChild(btnRun);
+        row.appendChild(btnSettings);
+        row.appendChild(statusEl);
+        panel.appendChild(row);
+        section.appendChild(panel);
+
+        const anchor = page.querySelector('.mainDetailButtons')
+            || page.querySelector('.itemDetailGalleryLink')
+            || page.querySelector('.detailPagePrimaryContent');
+
+        if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(section, anchor.nextSibling);
+        } else {
+            const content = page.querySelector('.detailPageContent');
+            if (content) content.appendChild(section);
+        }
+
+        const self = this;
+        btnRun.addEventListener('click', function () {
+            self._splitItem(item.Id, statusEl);
+        });
+        btnSettings.addEventListener('click', function () {
             Dashboard.navigate('configurationpage?name=moviesplitter');
         });
     },
 
-    // ── 2. Action button in the top button row ─────────────────────────────
-
-    onDetailPageButtons(item, buttons) {
-        if (!this._isMovie(item)) return;
-
-        buttons.push({
-            name: 'Split into episodes',
-            icon: 'call_split',
-            id: 'btnSplitRow',
-            onClick: async (btn) => {
-                const statusEl = document.createElement('span');
-                statusEl.style.cssText = 'font-size:0.85em;margin-left:8px;';
-                btn.parentNode?.insertBefore(statusEl, btn.nextSibling);
-                btn.disabled = true;
-                await this._splitItem(item.Id, statusEl);
-                btn.disabled = false;
-            }
-        });
-    },
-
-    // ── 3. Context menu item ────────────────────────────────────────────────
+    // ── 2. Context menu item ────────────────────────────────────────────────
+    // NOTE: getAdditionalCommands / onDetailPageButtons is intentionally
+    // omitted — Jellyfin passes those button objects through translateHtml,
+    // which calls .indexOf on them expecting a string and throws
+    // "e.indexOf is not a function".  The detail-page section above already
+    // provides a prominent Run button, so the top-row button is not needed.
 
     onContextMenu(item) {
-        if (!this._isMovie(item)) return;
+        if (!this._isMovie(item)) return null;
 
         const self = this;
         return {
             name: 'Split into episodes',
             icon: 'call_split',
-            onClick() {
-                // Confirmation toast in bottom-right corner
+            onClick: function () {
                 const dialog = document.createElement('div');
-                dialog.style.cssText = `
-                    position:fixed;bottom:24px;right:24px;
-                    background:#1e1e2e;color:#fff;
-                    border:1px solid rgba(124,58,237,0.5);
-                    border-radius:8px;padding:16px 20px;
-                    z-index:9999;min-width:280px;
-                    box-shadow:0 8px 32px rgba(0,0,0,0.5);
-                `;
-                dialog.innerHTML = `
-                    <p style="margin:0 0 12px;font-weight:600;">
-                        Split "${item.Name}" into episodes?
-                    </p>
-                    <div style="display:flex;gap:8px;align-items:center;">
-                        <button id="dlgConfirm" style="
-                            background:#7c3aed;color:#fff;border:none;
-                            padding:7px 16px;border-radius:4px;cursor:pointer;font-size:13px;">
-                            Run
-                        </button>
-                        <button id="dlgCancel" style="
-                            background:transparent;color:#fff;
-                            border:1px solid rgba(255,255,255,0.2);
-                            padding:7px 16px;border-radius:4px;cursor:pointer;font-size:13px;">
-                            Cancel
-                        </button>
-                        <span id="dlgStatus" style="font-size:12px;"></span>
-                    </div>
-                `;
+                dialog.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1e1e2e;color:#fff;border:1px solid rgba(124,58,237,0.5);border-radius:8px;padding:16px 20px;z-index:9999;min-width:280px;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
+
+                const title = document.createElement('p');
+                title.style.cssText = 'margin:0 0 12px;font-weight:600;';
+                title.textContent = 'Split "' + (item.Name || 'this movie') + '" into episodes?';
+
+                const btnRow = document.createElement('div');
+                btnRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
+
+                const confirm = document.createElement('button');
+                confirm.style.cssText = 'background:#7c3aed;color:#fff;border:none;padding:7px 16px;border-radius:4px;cursor:pointer;font-size:13px;';
+                confirm.textContent = 'Run';
+
+                const cancel = document.createElement('button');
+                cancel.style.cssText = 'background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.2);padding:7px 16px;border-radius:4px;cursor:pointer;font-size:13px;';
+                cancel.textContent = 'Cancel';
+
+                const dlgStatus = document.createElement('span');
+                dlgStatus.style.fontSize = '12px';
+
+                btnRow.appendChild(confirm);
+                btnRow.appendChild(cancel);
+                btnRow.appendChild(dlgStatus);
+                dialog.appendChild(title);
+                dialog.appendChild(btnRow);
                 document.body.appendChild(dialog);
 
-                dialog.querySelector('#dlgCancel').onclick = () => dialog.remove();
-                dialog.querySelector('#dlgConfirm').onclick = async () => {
-                    dialog.querySelector('#dlgConfirm').disabled = true;
-                    dialog.querySelector('#dlgCancel').disabled = true;
-                    const statusEl = dialog.querySelector('#dlgStatus');
-                    await self._splitItem(item.Id, statusEl);
-                    setTimeout(() => dialog.remove(), 3000);
+                cancel.onclick = function () { dialog.remove(); };
+                confirm.onclick = async function () {
+                    confirm.disabled = true;
+                    cancel.disabled = true;
+                    await self._splitItem(item.Id, dlgStatus);
+                    setTimeout(function () { dialog.remove(); }, 3000);
                 };
             }
         };
@@ -173,25 +168,21 @@ const MovieSplitterPlugin = {
         pluginManager.register({
             type: 'itemDetailPage',
 
-            async init(page, item) {
+            init: async function (page, item) {
                 await self.onDetailPage(item, page);
-            },
-
-            getAdditionalCommands(item) {
-                const buttons = [];
-                self.onDetailPageButtons(item, buttons);
-                return buttons;
             }
+
+            // getAdditionalCommands deliberately omitted — see note above.
         });
 
         pluginManager.register({
             type: 'itemContextMenu',
 
-            visible(item) {
+            visible: function (item) {
                 return self._isMovie(item);
             },
 
-            getOptions(item) {
+            getOptions: function (item) {
                 const opt = self.onContextMenu(item);
                 return opt ? [opt] : [];
             }
@@ -199,21 +190,19 @@ const MovieSplitterPlugin = {
 
         // ── MutationObserver fallback ────────────────────────────────────────
         // Guards against Jellyfin versions where pluginManager hooks don't fire.
-        // Watches for the detail page container and injects manually if needed.
 
-        const observer = new MutationObserver(() => {
+        const observer = new MutationObserver(function () {
             const detailPage = document.querySelector('.itemDetailPage');
             if (!detailPage || detailPage.dataset.splitterInjected) return;
             detailPage.dataset.splitterInjected = '1';
 
-            // Attempt to read item ID from the URL
             const params = new URLSearchParams(window.location.search);
             const itemId = params.get('id');
             if (!itemId) return;
 
-            ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(item => {
+            ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(function (item) {
                 if (self._isMovie(item)) self.onDetailPage(item, detailPage);
-            }).catch(() => { });
+            }).catch(function () { });
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
