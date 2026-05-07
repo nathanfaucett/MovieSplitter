@@ -25,12 +25,6 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             Name = "moviesplitter",
             DisplayName = "Movie Splitter",
             EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
-        },
-        new PluginPageInfo
-        {
-            Name                 = "moviesplitterdetail",
-            DisplayName = "Movie Splitter",
-            EmbeddedResourcePath = GetType().Namespace + ".Configuration.detailPagePlugin.js",
         }
     ];
 
