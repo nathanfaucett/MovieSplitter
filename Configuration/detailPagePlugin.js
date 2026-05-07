@@ -1,13 +1,11 @@
 /* global ApiClient, Dashboard, pluginManager, Events */
 
-const pluginId = 'b2be5f82-6324-4e02-a66c-6da5a160ac45';
-
 const MovieSplitterPlugin = {
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
     async _getPluginConfig() {
-        return ApiClient.getPluginConfiguration(pluginId);
+        return ApiClient.getPluginConfiguration('b2be5f82-6324-4e02-a66c-6da5a160ac45');
     },
 
     async _splitItem(itemId, statusEl) {
@@ -20,7 +18,7 @@ const MovieSplitterPlugin = {
             statusEl.style.color = '#10b981';
         } catch (err) {
             const msg = err?.response ? await err.response.text() : String(err);
-            statusEl.textContent = 'Error: ' + msg;
+            statusEl.textContent = `Error: ${msg}`;
             statusEl.style.color = '#ef4444';
         }
     },
