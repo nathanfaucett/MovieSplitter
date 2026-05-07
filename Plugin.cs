@@ -23,11 +23,13 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         new PluginPageInfo
         {
             Name = "moviesplitter",
+            DisplayName = "Movie Splitter",
             EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
         },
         new PluginPageInfo
         {
             Name                 = "moviesplitterdetail",
+            DisplayName = "Movie Splitter",
             EmbeddedResourcePath = GetType().Namespace + ".Configuration.detailPagePlugin.js",
             EnableInMainMenu       = true,   // <-- this is the key flag
         }
