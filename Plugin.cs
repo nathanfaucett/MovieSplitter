@@ -19,14 +19,19 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     }
 
     public IEnumerable<PluginPageInfo> GetPages() =>
-    [
-        new PluginPageInfo
-        {
-            Name = "moviesplitter",
-            DisplayName = "Movie Splitter",
-            EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
-        }
-    ];
+ [
+     new PluginPageInfo
+    {
+        Name = "moviesplitter",
+        EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
+    },
+    new PluginPageInfo
+    {
+        Name                 = "moviesplitterdetails",
+        EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.detailPagePlugin.html",
+        EnableInMainMenu     = false
+    }
+ ];
 
     public string GetFfmpegPath()
     {
