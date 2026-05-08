@@ -11,22 +11,15 @@ public static class BoundaryDetectorFactory
     {
         var heuristic = new HeuristicBoundaryDetector(config, logger);
 
-        if (!config.OllamaEnabled || string.IsNullOrWhiteSpace(config.OllamaUrl))
+        if (string.IsNullOrWhiteSpace(config.OllamaUrl))
         {
             logger.LogInformation("[Factory] Ollama not configured → using Heuristic detector");
             return heuristic;
         }
 
-        var ollamaClient   = new OllamaClient(config.OllamaUrl, config.OllamaModel, logger);
-        var ollamaDetector = new OllamaBoundaryDetector(config, ollamaClient, logger);
-
         return config.DetectorMode switch
         {
-            DetectorMode.Ollama => ollamaDetector,
-
-            DetectorMode.Composite => new CompositeBoundaryDetector(
-                new IBoundaryDetector[] { heuristic, ollamaDetector },
-                config, logger),
+            DetectorMode.Ollama => new OllamaBoundaryDetector(config, new OllamaClient(config.OllamaUrl, config.OllamaModel, logger), logger),
 
             _ => heuristic
         };

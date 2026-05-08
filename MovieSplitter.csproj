@@ -12,7 +12,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
-    <EmbeddedResource Include="Configuration\detailPagePlugin.js" />
+    <EmbeddedResource Include="Plugin\detailPagePlugin.js" />
   </ItemGroup>
 
   <ItemGroup>

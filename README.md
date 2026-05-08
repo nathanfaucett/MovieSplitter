@@ -305,11 +305,11 @@ Open **Dashboard → Plugins → My Plugins → Movie Splitter → Settings**.
 
 ### Heuristic settings
 
-| Setting                | Default                                                   | Description                                                                                            |
-| ---------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Silence gap threshold  | `30` s                                                    | Gap between subtitle cues that signals an episode boundary                                             |
-| Minimum episode length | `10` min                                                  | Prevents very short segments from being treated as episodes                                            |
-| Cue word patterns      | `previously on,next time on,\bchapter \d+\b,\bpart \d+\b` | Comma-separated regex patterns — a subtitle line matching any of these is treated as a boundary marker |
+| Setting               | Default                                                   | Description                                                                                            |
+| --------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Silence gap threshold | `60` s                                                    | Gap between subtitle cues that signals an episode boundary                                             |
+| Target episode length | `30` min                                                  | Prevents very short segments from being treated as episodes                                            |
+| Cue word patterns     | `previously on,next time on,\bchapter \d+\b,\bpart \d+\b` | Comma-separated regex patterns — a subtitle line matching any of these is treated as a boundary marker |
 
 ### Ollama settings
 
@@ -317,7 +317,7 @@ Open **Dashboard → Plugins → My Plugins → Movie Splitter → Settings**.
 | ----------------- | ------------------------ | ----------------------------------------- |
 | Enable Ollama     | Off                      | Must be on for Ollama and Composite modes |
 | Ollama server URL | `http://localhost:11434` | Base URL — can be a remote host           |
-| Model             | `llama3`                 | Any model installed in Ollama             |
+| Model             | `gemma4:e2b`             | Any model installed in Ollama             |
 
 Use the **Test connection** button to verify Ollama is reachable before enabling it.
 

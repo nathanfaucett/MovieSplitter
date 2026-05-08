@@ -12,6 +12,9 @@ public class OllamaBoundaryDetector : IBoundaryDetector
     // How many subtitle cues to send per LLM chunk (keeps prompt manageable)
     private const int ChunkSize = 120;
 
+    private static readonly TimeSpan BoundaryWindow =
+        TimeSpan.FromMinutes(10);
+
     private static readonly Regex TimestampRx = new(
         @"\b(\d{1,2}):(\d{2}):(\d{2})(?:[.,](\d{1,3}))?\b",
         RegexOptions.Compiled);
@@ -26,9 +29,9 @@ public class OllamaBoundaryDetector : IBoundaryDetector
         OllamaClient client,
         ILogger logger)
     {
-        _config   = config;
-        _client   = client;
-        _logger   = logger;
+        _config = config;
+        _client = client;
+        _logger = logger;
         _fallback = new HeuristicBoundaryDetector(config, logger);
     }
 
@@ -60,15 +63,15 @@ public class OllamaBoundaryDetector : IBoundaryDetector
         CancellationToken ct)
     {
         var allBoundaries = new HashSet<TimeSpan>();
-        int overlap       = ChunkSize / 4;
+        int overlap = ChunkSize / 4;
 
         for (int start = 0; start < cues.Count; start += ChunkSize - overlap)
         {
             ct.ThrowIfCancellationRequested();
-            var chunk    = cues.Skip(start).Take(ChunkSize).ToList();
-            var prompt   = BuildPrompt(chunk, totalDuration);
+            var chunk = cues.Skip(start).Take(ChunkSize).ToList();
+            var prompt = BuildPrompt(chunk, totalDuration);
             var response = await _client.GenerateAsync(prompt, ct);
-            var found    = ParseTimestamps(response, chunk);
+            var found = ParseTimestamps(response, chunk);
             foreach (var ts in found) allBoundaries.Add(ts);
         }
 
@@ -132,7 +135,7 @@ public class OllamaBoundaryDetector : IBoundaryDetector
         }
 
         var chunkStart = chunk.First().Start;
-        var chunkEnd   = chunk.Last().End;
+        var chunkEnd = chunk.Last().End;
         return results.Where(t => t >= chunkStart && t <= chunkEnd).ToList();
     }
 
@@ -149,20 +152,64 @@ public class OllamaBoundaryDetector : IBoundaryDetector
     }
 
     private IReadOnlyList<TimeSpan> FilterAndSort(
-        HashSet<TimeSpan> candidates, TimeSpan totalDuration)
+    HashSet<TimeSpan> candidates,
+    TimeSpan totalDuration)
     {
-        var min    = TimeSpan.FromMinutes(_config.MinEpisodeMinutes);
-        var sorted = candidates.OrderBy(t => t).ToList();
+        if (candidates.Count == 0)
+            return [];
+
+        var targetEpisode =
+            TimeSpan.FromMinutes(_config.TargetEpisodeMinutes);
+
+        var sorted = candidates
+            .OrderBy(t => t)
+            .ToList();
+
         var result = new List<TimeSpan>();
-        var last   = TimeSpan.Zero;
 
-        foreach (var t in sorted)
+        var currentStart = TimeSpan.Zero;
+
+        while (true)
         {
-            if (t - last >= min) { result.Add(t); last = t; }
-        }
+            var targetBoundary = currentStart + targetEpisode;
 
-        if (result.Count > 0 && totalDuration - result.Last() < min)
-            result.RemoveAt(result.Count - 1);
+            var nearby = sorted
+                .Where(t =>
+                    t > currentStart &&
+                    t >= targetBoundary - BoundaryWindow &&
+                    t <= targetBoundary + BoundaryWindow)
+                .ToList();
+
+            // fallback: nearest future timestamps
+            if (nearby.Count == 0)
+            {
+                nearby = sorted
+                    .Where(t => t > currentStart)
+                    .Take(5)
+                    .ToList();
+            }
+
+            if (nearby.Count == 0)
+                break;
+
+            // Choose timestamp closest to ideal duration
+            var best = nearby
+                .OrderBy(t =>
+                    Math.Abs((t - targetBoundary).TotalSeconds))
+                .First();
+
+            // Avoid tiny tail episode
+            if (totalDuration - best < targetEpisode / 2)
+                break;
+
+            result.Add(best);
+
+            _logger.LogDebug(
+                "[Ollama] Selected boundary at {Time:g}",
+                best);
+
+            currentStart = best;
+        }
 
         return result;
     }

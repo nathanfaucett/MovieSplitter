@@ -7,15 +7,18 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
 {
     public string Name => "Heuristic";
 
+    private static readonly TimeSpan BoundaryWindow =
+        TimeSpan.FromMinutes(10);
+
     private readonly PluginConfiguration _config;
-    private readonly CueWordMatcher _cueMatcher;
     private readonly ILogger _logger;
 
-    public HeuristicBoundaryDetector(PluginConfiguration config, ILogger logger)
+    public HeuristicBoundaryDetector(
+        PluginConfiguration config,
+        ILogger logger)
     {
         _config = config;
         _logger = logger;
-        _cueMatcher = new CueWordMatcher(config.CueWordPatterns);
     }
 
     public Task<IReadOnlyList<TimeSpan>> DetectAsync(
@@ -23,47 +26,111 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
         TimeSpan totalDuration,
         CancellationToken ct = default)
     {
-        var candidates = new HashSet<TimeSpan>();
+        var candidates = FindCandidates(cues);
 
-        // Cue-word matches
-        foreach (var ts in _cueMatcher.FindCueBoundaries(cues))
-        {
-            _logger.LogDebug("[Heuristic] Cue-word boundary at {T}", ts);
-            candidates.Add(ts);
-        }
+        var filtered = BalanceEpisodes(
+            candidates,
+            totalDuration);
 
-        // Long silence gaps between subtitle blocks
-        var silence = TimeSpan.FromSeconds(_config.SilenceThresholdSeconds);
+        return Task.FromResult<IReadOnlyList<TimeSpan>>(filtered);
+    }
+
+    private List<CandidateBoundary> FindCandidates(
+        IReadOnlyList<SubtitleCue> cues)
+    {
+        var results = new List<CandidateBoundary>();
+
+        var silenceThreshold =
+            TimeSpan.FromSeconds(_config.SilenceThresholdSeconds);
+
         for (int i = 1; i < cues.Count; i++)
         {
             var gap = cues[i].Start - cues[i - 1].End;
-            if (gap >= silence)
+
+            if (gap < silenceThreshold)
+                continue;
+
+            var midpoint = cues[i - 1].End + gap / 2;
+
+            results.Add(new CandidateBoundary
             {
-                var mid = cues[i - 1].End + gap / 2;
-                _logger.LogDebug("[Heuristic] Silence gap {G:g} → boundary at {T}", gap, mid);
-                candidates.Add(mid);
-            }
+                Time = midpoint,
+                SilenceGap = gap
+            });
+
+            _logger.LogDebug(
+                "[Heuristic] Silence gap {Gap:g} -> candidate at {Time:g}",
+                gap,
+                midpoint);
         }
 
-        return Task.FromResult(Filter(candidates, totalDuration));
+        return results
+            .OrderBy(x => x.Time)
+            .ToList();
     }
 
-    private IReadOnlyList<TimeSpan> Filter(
-        HashSet<TimeSpan> candidates, TimeSpan totalDuration)
+    private IReadOnlyList<TimeSpan> BalanceEpisodes(
+        List<CandidateBoundary> candidates,
+        TimeSpan totalDuration)
     {
-        var min    = TimeSpan.FromMinutes(_config.MinEpisodeMinutes);
-        var sorted = candidates.OrderBy(t => t).ToList();
-        var result = new List<TimeSpan>();
-        var last   = TimeSpan.Zero;
+        if (candidates.Count == 0)
+            return [];
 
-        foreach (var t in sorted)
+        var targetEpisode =
+            TimeSpan.FromMinutes(_config.TargetEpisodeMinutes);
+
+        var result = new List<TimeSpan>();
+
+        var currentStart = TimeSpan.Zero;
+
+        while (true)
         {
-            if (t - last >= min) { result.Add(t); last = t; }
+            var targetBoundary = currentStart + targetEpisode;
+
+            var nearby = candidates
+                .Where(c =>
+                    c.Time > currentStart &&
+                    c.Time >= targetBoundary - BoundaryWindow &&
+                    c.Time <= targetBoundary + BoundaryWindow)
+                .ToList();
+
+            if (nearby.Count == 0)
+            {
+                nearby = candidates
+                    .Where(c => c.Time > currentStart)
+                    .Take(5)
+                    .ToList();
+            }
+
+            if (nearby.Count == 0)
+                break;
+
+            var best = nearby
+                .OrderBy(c =>
+                    Math.Abs((c.Time - targetBoundary).TotalSeconds))
+                .ThenByDescending(c => c.SilenceGap)
+                .First();
+
+            // Don't create a tiny tail episode
+            if (totalDuration - best.Time < targetEpisode / 2)
+                break;
+
+            result.Add(best.Time);
+
+            _logger.LogDebug(
+                "[Heuristic] Selected boundary at {Time:g}",
+                best.Time);
+
+            currentStart = best.Time;
         }
 
-        if (result.Count > 0 && totalDuration - result.Last() < min)
-            result.RemoveAt(result.Count - 1);
-
         return result;
+    }
+
+    private sealed class CandidateBoundary
+    {
+        public required TimeSpan Time { get; init; }
+
+        public required TimeSpan SilenceGap { get; init; }
     }
 }
