@@ -1,4 +1,5 @@
 using Jellyfin.Database.Implementations.Entities;
+using MediaBrowser.Controller.Chapters;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
@@ -19,15 +20,18 @@ public class MovieSplitterController : ControllerBase
     private readonly IUserManager _userManager;
     private readonly ILibraryManager _library;
     private readonly ILogger<MovieSplitterController> _logger;
+    private readonly IChapterManager _chapterManager;
 
     public MovieSplitterController(
         IUserManager userManager,
         ILibraryManager library,
-        ILogger<MovieSplitterController> logger)
+        ILogger<MovieSplitterController> logger,
+        IChapterManager chapterManager)
     {
         _userManager = userManager;
         _library = library;
         _logger = logger;
+        _chapterManager = chapterManager;
     }
 
     /// <summary>
@@ -73,9 +77,9 @@ public class MovieSplitterController : ControllerBase
             ? TimeSpan.FromTicks(movie.RunTimeTicks.Value) : TimeSpan.Zero;
 
         _logger.LogInformation($"Creating boundary detector for {config.DetectorMode}");
-        var detector = BoundaryDetectorFactory.Create(config, _logger);
+        var detector = BoundaryDetectorFactory.Create(config, _logger, _chapterManager);
         _logger.LogInformation($"Starting boundary detector {detector.Name}");
-        var boundaries = await detector.DetectAsync(cues, totalDuration, ct);
+        var boundaries = await detector.DetectAsync(item as Movie, cues, totalDuration, ct);
 
         if (boundaries.StartTimes.Count == 0)
             return Ok(new SplitItemResult(0, "No episode start times detected."));

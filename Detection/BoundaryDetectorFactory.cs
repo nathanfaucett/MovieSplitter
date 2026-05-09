@@ -1,3 +1,4 @@
+using MediaBrowser.Controller.Chapters;
 using Microsoft.Extensions.Logging;
 using MovieSplitter.Detection.Ollama;
 
@@ -7,9 +8,10 @@ public static class BoundaryDetectorFactory
 {
     public static IBoundaryDetector Create(
         PluginConfiguration config,
-        ILogger logger)
+        ILogger logger,
+        IChapterManager chapterManager)
     {
-        var heuristic = new HeuristicBoundaryDetector(config, logger);
+        var heuristic = new HeuristicBoundaryDetector(config, logger, chapterManager);
 
         if (string.IsNullOrWhiteSpace(config.OllamaUrl))
         {
@@ -19,7 +21,7 @@ public static class BoundaryDetectorFactory
 
         return config.DetectorMode switch
         {
-            DetectorMode.Ollama => new OllamaBoundaryDetector(config, new OllamaClient(config.OllamaUrl, config.OllamaModel, logger), logger),
+            DetectorMode.Ollama => new OllamaBoundaryDetector(config, new OllamaClient(config.OllamaUrl, config.OllamaModel, logger), logger, chapterManager),
 
             _ => heuristic
         };

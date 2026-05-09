@@ -1,48 +1,64 @@
 (() => {
     const PLUGIN_ID = 'b2be5f82-6324-4e02-a66c-6da5a160ac45';
-    const BUTTON_ID = 'btnMovieSplitter';
+    const BUTTON_CLASS = 'btnMovieSplitter';
+
+    console.log(`[${PLUGIN_ID}] Movie Splitter plugin script starting...`);
+
+    let currentItemId = null;
+    let observer = null;
+    let debounceTimer = null;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-
     function getItemIdFromUrl() {
-        const params = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
-        return params.get('id');
+        const hash = window.location.hash;
+        console.log(`[${PLUGIN_ID}] getItemIdFromUrl() - Current hash:`, hash);
+
+        if (!hash.includes('/details')) {
+            console.log(`[${PLUGIN_ID}] Not on a details page`);
+            return null;
+        }
+
+        const params = new URLSearchParams(hash.split('?')[1] ?? '');
+        const itemId = params.get('id');
+        console.log(`[${PLUGIN_ID}] Extracted itemId:`, itemId);
+        return itemId;
     }
 
     function createSplitButton() {
+        console.log(`[${PLUGIN_ID}] Creating split button...`);
         const btn = document.createElement('button');
-        btn.id = BUTTON_ID;
         btn.setAttribute('is', 'emby-button');
         btn.setAttribute('type', 'button');
         btn.setAttribute('title', 'Split into episodes');
-        btn.className = 'button-flat detailButton emby-button';
+        btn.className = `button-flat detailButton emby-button ${BUTTON_CLASS}`;
         btn.innerHTML = `
             <div class="detailButton-content">
                 <span class="material-icons detailButton-icon call_split" aria-hidden="true"></span>
             </div>`;
+        console.log(`[${PLUGIN_ID}] Split button created successfully`);
         return btn;
     }
 
-    async function runSplit(itemId, btn) {
+    async function runSplit(itemId, btn) { /* ... same as before ... */
+        console.log(`[${PLUGIN_ID}] runSplit() called for itemId:`, itemId);
         const originalTitle = btn.title;
-
         btn.disabled = true;
         btn.title = 'Splitting…';
         const icon = btn.querySelector('.material-icons');
         if (icon) icon.textContent = 'hourglass_empty';
 
         try {
+            console.log(`[${PLUGIN_ID}] Sending split request...`);
             const url = ApiClient.getUrl('MovieSplitter/SplitItem', { itemId });
-            const result = await ApiClient.ajax({
-                type: 'POST', url, dataType: 'json'
-            });
+            console.log(`[${PLUGIN_ID}] API URL:`, url);
 
-            if (result.message) {
-                Dashboard.alert(result.message);
-            } else {
-                Dashboard.alert(`Done! Created ${result.episodesCreated} episode file(s).`);
-            }
+            const result = await ApiClient.ajax({ type: 'POST', url, dataType: 'json' });
+            console.log(`[${PLUGIN_ID}] API response:`, result);
+
+            if (result.message) Dashboard.alert(result.message);
+            else Dashboard.alert(`Done! Created ${result.episodesCreated} episode file(s).`);
         } catch (err) {
+            console.error(`[${PLUGIN_ID}] Split failed:`, err);
             const msg = err?.responseJSON?.error ?? err?.message ?? 'Unknown error';
             Dashboard.alert(`Split failed: ${msg}`);
         } finally {
@@ -53,51 +69,110 @@
     }
 
     function confirmAndSplit(itemId, btn) {
+        console.log(`[${PLUGIN_ID}] confirmAndSplit() triggered`);
         Dashboard.confirm(
             'Split this movie into individual episode files using subtitle analysis?',
             'Split into episodes',
-            confirmed => { if (confirmed) runSplit(itemId, btn); }
+            confirmed => {
+                console.log(`[${PLUGIN_ID}] User confirmed:`, confirmed);
+                if (confirmed) runSplit(itemId, btn);
+            }
         );
     }
 
-    // ── Injection ────────────────────────────────────────────────────────────
+    // ── Core Functions ─────────────────────────────────────────────────────
+    function unmountButtons() {
+        const count = document.querySelectorAll(`.${BUTTON_CLASS}`).length;
+        console.log(`[${PLUGIN_ID}] unmountButtons() - Removing ${count} buttons`);
+        document.querySelectorAll(`.${BUTTON_CLASS}`).forEach(el => el.remove());
+    }
 
-    function injectButton(buttonRow) {
-        if (buttonRow.querySelector(`#${BUTTON_ID}`)) return; // already injected
+    function addButtonToRow(buttonRow, itemId) {
+        if (buttonRow.querySelector(`.${BUTTON_CLASS}`)) {
+            console.log(`[${PLUGIN_ID}] Button already present in this row`);
+            return false;
+        }
 
-        const itemId = getItemIdFromUrl();
-        if (!itemId) return;
-
+        console.log(`[${PLUGIN_ID}] Adding button to row`);
         const btn = createSplitButton();
         btn.addEventListener('click', () => confirmAndSplit(itemId, btn));
 
-        // Insert before the "More" button (btnMoreCommands) if it exists,
-        // otherwise just append.
         const moreBtn = buttonRow.querySelector('.btnMoreCommands');
         if (moreBtn) {
             buttonRow.insertBefore(btn, moreBtn);
+            console.log(`[${PLUGIN_ID}] ✅ Inserted before .btnMoreCommands`);
         } else {
             buttonRow.appendChild(btn);
+            console.log(`[${PLUGIN_ID}] ✅ Appended to row`);
         }
+        return true;
     }
 
-    // ── Observer ─────────────────────────────────────────────────────────────
+    function mountAllVisibleButtons() {
+        const itemId = getItemIdFromUrl();
+        if (!itemId) return;
 
-    function tryInject() {
-        const buttonRow = document.querySelector('.mainDetailButtons');
-        if (buttonRow) injectButton(buttonRow);
+        if (itemId !== currentItemId) {
+            console.log(`[${PLUGIN_ID}] Item changed, resetting`);
+            currentItemId = itemId;
+            unmountButtons();
+        }
+
+        const buttonRows = document.querySelectorAll('.mainDetailButtons');
+        console.log(`[${PLUGIN_ID}] mountAllVisibleButtons → Found ${buttonRows.length} rows`);
+
+        let addedAny = false;
+        buttonRows.forEach(row => {
+            if (addButtonToRow(row, itemId)) addedAny = true;
+        });
+
+        return addedAny;
     }
 
-    // Run once immediately in case the page is already rendered.
-    tryInject();
+    // ── Debounced Observer ─────────────────────────────────────────────────
+    function startObserver() {
+        if (observer) return;
 
-    // Re-run whenever the hash changes (Jellyfin is a SPA).
-    window.addEventListener('hashchange', () => {
-        // Give the SPA a moment to render the new page.
-        setTimeout(tryInject, 500);
-    });
+        observer = new MutationObserver(() => {
+            if (debounceTimer) clearTimeout(debounceTimer);
 
-    // Also observe DOM mutations so we catch the initial render.
-    const observer = new MutationObserver(() => tryInject());
-    observer.observe(document.body, { childList: true, subtree: true });
+            debounceTimer = setTimeout(() => {
+                console.log(`[${PLUGIN_ID}] DOM changed → checking for new .mainDetailButtons`);
+                const added = mountAllVisibleButtons();
+
+                // Optional: Disconnect observer if we successfully added buttons
+                // (uncomment if you want to reduce noise)
+                // if (added) observer.disconnect();
+            }, 120);
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+        console.log(`[${PLUGIN_ID}] MutationObserver started (debounced)`);
+    }
+
+    // ── Navigation ─────────────────────────────────────────────────────────
+    function handleHashChange() {
+        console.log(`[${PLUGIN_ID}] handleHashChange() triggered`);
+        currentItemId = null; // Force refresh
+        unmountButtons();
+        setTimeout(() => {
+            mountAllVisibleButtons();
+            startObserver();
+        }, 100);
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────
+    function init() {
+        console.log(`[${PLUGIN_ID}] Initializing plugin...`);
+        console.log(`[${PLUGIN_ID}] ApiClient:`, typeof ApiClient !== 'undefined');
+        console.log(`[${PLUGIN_ID}] Dashboard:`, typeof Dashboard !== 'undefined');
+
+        handleHashChange();
+        window.addEventListener('hashchange', handleHashChange);
+        window.addEventListener('popstate', handleHashChange);
+
+        setTimeout(handleHashChange, 700);
+    }
+
+    init();
 })();

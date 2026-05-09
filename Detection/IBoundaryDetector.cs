@@ -1,3 +1,4 @@
+using MediaBrowser.Controller.Entities.Movies;
 using MovieSplitter.Subtitle;
 
 namespace MovieSplitter.Detection;
@@ -11,6 +12,7 @@ public interface IBoundaryDetector
     string Name { get; }
 
     Task<Boundaries> DetectAsync(
+        Movie item,
         IReadOnlyList<SubtitleCue> cues,
         TimeSpan totalDuration,
         CancellationToken ct = default);

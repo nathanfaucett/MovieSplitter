@@ -1,4 +1,6 @@
 using System.Text;
+using MediaBrowser.Controller.Chapters;
+using MediaBrowser.Controller.Entities.Movies;
 using Microsoft.Extensions.Logging;
 using MovieSplitter.Subtitle;
 
@@ -12,90 +14,153 @@ public class OllamaBoundaryDetector : IBoundaryDetector
     private readonly HeuristicBoundaryDetector _fallback;
     private readonly PluginConfiguration _config;
     private readonly ILogger _logger;
+    private readonly IChapterManager _chapterManager;
 
     public OllamaBoundaryDetector(
         PluginConfiguration config,
         OllamaClient client,
-        ILogger logger)
+        ILogger logger,
+        IChapterManager chapterManager)
     {
         _config = config;
         _client = client;
         _logger = logger;
-        _fallback = new HeuristicBoundaryDetector(config, logger);
+        _chapterManager = chapterManager;
+
+        _fallback =
+            new HeuristicBoundaryDetector(
+                config,
+                logger,
+                chapterManager);
     }
 
     public async Task<Boundaries> DetectAsync(
+        Movie item,
         IReadOnlyList<SubtitleCue> cues,
         TimeSpan totalDuration,
         CancellationToken ct = default)
     {
         if (cues.Count == 0)
-            return new Boundaries(Array.Empty<TimeSpan>(), null);
+            return new Boundaries(
+                Array.Empty<TimeSpan>(),
+                null);
 
-        var credits = HeuristicBoundaryDetector.DetectCredits(_logger, cues, totalDuration);
-        var targetEpisode = TimeSpan.FromMinutes(_config.TargetEpisodeMinutes);
-        var candidates = HeuristicBoundaryDetector.FindCandidates(_logger, cues, totalDuration, targetEpisode, HeuristicBoundaryDetector.BoundaryWindow, credits);
+        var credits =
+            BoundaryDetectionHelper.DetectCredits(
+                _logger,
+                cues,
+                totalDuration);
+
+        var targetEpisode =
+            TimeSpan.FromMinutes(
+                _config.TargetEpisodeMinutes);
+
+        var candidates =
+            BoundaryDetectionHelper.GenerateCandidates(
+                _logger,
+                _chapterManager,
+                item,
+                cues,
+                totalDuration,
+                targetEpisode,
+                BoundaryDetectionHelper.BoundaryWindow,
+                credits);
 
         try
         {
-            _logger.LogInformation("[Ollama] candidates={Count}", candidates.Count);
+            _logger.LogInformation(
+                "[Ollama] candidates={Count}",
+                candidates.Count);
 
-            var confirmedBoundaries = new List<TimeSpan>();
+            var confirmed = new List<TimeSpan>();
 
             foreach (var candidate in candidates)
             {
                 ct.ThrowIfCancellationRequested();
 
+                // Chapter-based candidates are trusted
+                if (candidate.Strength ==
+                    BoundaryDetectionHelper.Confidence.Chapter)
+                {
+                    confirmed.Add(candidate.Time);
+                    continue;
+                }
+
                 var context = cues
                     .Where(x =>
-                        x.Start >= candidate.Time - HeuristicBoundaryDetector.BoundaryWindow / 2 &&
-                        x.End <= candidate.Time + HeuristicBoundaryDetector.BoundaryWindow / 2)
+                        x.Start >= candidate.Time - BoundaryDetectionHelper.BoundaryWindow / 2 &&
+                        x.End <= candidate.Time + BoundaryDetectionHelper.BoundaryWindow / 2)
                     .ToList();
 
                 if (context.Count == 0)
                     continue;
 
-                var prompt = BuildPrompt(candidate.Time, context, targetEpisode);
+                var prompt = BuildPrompt(
+                    candidate.Time,
+                    context,
+                    targetEpisode);
 
                 _logger.LogInformation(
-                    "[Ollama][Prompt] target={Time} chars={Length}\n{Prompt}",
-                    candidate.Time, prompt.Length, prompt);
+                    "[Ollama][Prompt] target={Time} chars={Length}",
+                    candidate.Time,
+                    prompt.Length);
 
-                var response = await _client.GenerateAsync(prompt, ct);
+                var response =
+                    await _client.GenerateAsync(
+                        prompt,
+                        ct);
 
                 _logger.LogInformation(
                     "[Ollama][Response] target={Time}: {Response}",
-                    candidate.Time, response);
+                    candidate.Time,
+                    response);
 
-                if (TryParseBestSplitTime(response, out var bestTime))
+                if (TryParseBestSplitTime(
+                    response,
+                    out var bestTime))
                 {
                     if (bestTime > TimeSpan.Zero &&
-                        Math.Abs((bestTime - candidate.Time).TotalMinutes) <= HeuristicBoundaryDetector.BoundaryWindow.TotalMinutes * 2)
+                        Math.Abs((bestTime - candidate.Time).TotalMinutes)
+                        <= BoundaryDetectionHelper.BoundaryWindow.TotalMinutes * 2)
                     {
-                        confirmedBoundaries.Add(bestTime);
+                        confirmed.Add(bestTime);
                     }
                 }
             }
 
-            // Deduplicate (30-second tolerance)
-            var boundaries = confirmedBoundaries
-                .DistinctBy(t => Math.Round(t.TotalSeconds / 30))
+            var boundaries = confirmed
+                .DistinctBy(t =>
+                    Math.Round(t.TotalSeconds / 30))
                 .OrderBy(t => t)
                 .ToList();
 
-            // Fallback: largest natural gaps if model found nothing
             if (boundaries.Count == 0)
             {
-                _logger.LogWarning("[Ollama] No good split points found by model → using largest gaps");
-                boundaries = FindLargestGaps(cues, credits, targetEpisode);
+                _logger.LogWarning(
+                    "[Ollama] no validated boundaries → fallback");
+
+                return await _fallback.DetectAsync(
+                    item,
+                    cues,
+                    totalDuration,
+                    ct);
             }
 
-            return new Boundaries(boundaries, credits);
+            return new Boundaries(
+                boundaries,
+                credits);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Ollama] Error, falling back to heuristic");
-            return await _fallback.DetectAsync(cues, totalDuration, ct);
+            _logger.LogWarning(
+                ex,
+                "[Ollama] error → fallback");
+
+            return await _fallback.DetectAsync(
+                item,
+                cues,
+                totalDuration,
+                ct);
         }
     }
 
@@ -106,86 +171,65 @@ public class OllamaBoundaryDetector : IBoundaryDetector
     {
         var sb = new StringBuilder();
 
-        sb.AppendLine("You are helping split a movie into roughly equal parts.");
-        sb.AppendLine($"Target part length: ~{targetPartLength.TotalMinutes} minutes");
-        sb.AppendLine($"Approximate split time being evaluated: {targetTime:hh\\:mm\\:ss}");
+        sb.AppendLine(
+            "You are helping split a movie into roughly equal parts.");
+
+        sb.AppendLine(
+            $"Target part length: ~{targetPartLength.TotalMinutes} minutes");
+
+        sb.AppendLine(
+            $"Approximate split time being evaluated: {targetTime:hh\\:mm\\:ss}");
+
         sb.AppendLine();
         sb.AppendLine("SUBTITLES AROUND THIS TIME:");
         sb.AppendLine("[start] text");
 
         foreach (var c in cues)
-            sb.AppendLine($"[{c.Start:hh\\:mm\\:ss}] {c.Text}");
+            sb.AppendLine(
+                $"[{c.Start:hh\\:mm\\:ss}] {c.Text}");
 
         sb.AppendLine();
         sb.AppendLine("TASK:");
-        sb.AppendLine("Find the SINGLE best natural place to stop this part of the movie.");
-        sb.AppendLine("Good split points are usually:");
-        sb.AppendLine("- End of a scene");
-        sb.AppendLine("- End of an act / major sequence");
-        sb.AppendLine("- After a significant event or cliffhanger");
-        sb.AppendLine("- Long pause / silence between scenes");
-        sb.AppendLine("- Natural narrative break");
+        sb.AppendLine(
+            "Find the SINGLE best natural place to stop this part of the movie.");
+
         sb.AppendLine();
-        sb.AppendLine("INSTRUCTIONS:");
-        sb.AppendLine("• Choose one of the subtitle timestamps as the split point.");
-        sb.AppendLine("• If this window does NOT contain a good natural break, reply with NONE.");
-        sb.AppendLine();
-        sb.AppendLine("Respond using this exact format only:");
-        sb.AppendLine("BEST_SPLIT: hh:mm:ss");
+        sb.AppendLine(
+            "Respond using this exact format only:");
+
+        sb.AppendLine(
+            "BEST_SPLIT: hh:mm:ss");
+
         sb.AppendLine("or");
-        sb.AppendLine("BEST_SPLIT: NONE");
+
+        sb.AppendLine(
+            "BEST_SPLIT: NONE");
 
         return sb.ToString();
     }
 
-    private static bool TryParseBestSplitTime(string response, out TimeSpan time)
+    private static bool TryParseBestSplitTime(
+        string response,
+        out TimeSpan time)
     {
         time = TimeSpan.Zero;
-        var trimmed = response.Trim();
 
-        var match = System.Text.RegularExpressions.Regex.Match(
-            trimmed,
-            @"BEST_SPLIT:\s*(?:NONE|(\d{1,2}:\d{2}:\d{2}))",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var match =
+            System.Text.RegularExpressions.Regex.Match(
+                response.Trim(),
+                @"BEST_SPLIT:\s*(?:NONE|(\d{1,2}:\d{2}:\d{2}))",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
         if (!match.Success)
             return false;
 
         var timeStr = match.Groups[1].Value;
-        if (string.IsNullOrWhiteSpace(timeStr) ||
-            timeStr.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+
+        if (string.IsNullOrWhiteSpace(timeStr))
             return false;
 
-        return TimeSpan.TryParse(timeStr, out time);
-    }
-
-    private List<TimeSpan> FindLargestGaps(
-        IReadOnlyList<SubtitleCue> cues,
-        (TimeSpan, TimeSpan)? credits,
-        TimeSpan targetEpisode)
-    {
-        var gaps = new List<(TimeSpan Time, TimeSpan Duration)>();
-
-        for (int i = 0; i < cues.Count - 1; i++)
-        {
-            var gap = cues[i + 1].Start - cues[i].End;
-
-            if (gap > TimeSpan.FromSeconds(40))
-            {
-                var splitTime = cues[i].End;
-
-                // Skip credits area
-                if (credits.HasValue && splitTime >= credits.Value.Item1)
-                    continue;
-
-                gaps.Add((splitTime, gap));
-            }
-        }
-
-        return gaps
-            .OrderByDescending(g => g.Duration)
-            .Select(g => g.Time)
-            .Take(5)
-            .ToList();
+        return TimeSpan.TryParse(
+            timeStr,
+            out time);
     }
 }
