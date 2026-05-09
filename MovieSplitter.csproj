@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <AssemblyName>MovieSplitter</AssemblyName>
     <RootNamespace>MovieSplitter</RootNamespace>
     <Nullable>enable</Nullable>
@@ -12,12 +12,12 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
-    <EmbeddedResource Include="Plugin\detailPagePlugin.js" />
+    <EmbeddedResource Include="Plugin\plugin.js" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Controller" Version="10.9.0" />
-    <PackageReference Include="Jellyfin.Model" Version="10.9.0" />
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.8" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.8" />
   </ItemGroup>
 
 </Project>

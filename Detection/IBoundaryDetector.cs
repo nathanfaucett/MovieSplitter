@@ -10,8 +10,10 @@ public interface IBoundaryDetector
 {
     string Name { get; }
 
-    Task<IReadOnlyList<TimeSpan>> DetectAsync(
+    Task<Boundaries> DetectAsync(
         IReadOnlyList<SubtitleCue> cues,
         TimeSpan totalDuration,
         CancellationToken ct = default);
 }
+
+public record Boundaries(IReadOnlyList<TimeSpan> StartTimes, (TimeSpan, TimeSpan)? Credits);

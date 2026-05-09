@@ -20,11 +20,11 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     public IEnumerable<PluginPageInfo> GetPages() =>
     [
-        // Settings page — shown in Dashboard → Plugins → My Plugins
         new PluginPageInfo
         {
             Name                 = $"{GetType().Namespace}",
-            EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
+            EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html",
+            DisplayName          = "configPage.html",
         }
     ];
 

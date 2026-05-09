@@ -58,7 +58,7 @@ dotnet build -c Release
 The build output will be in:
 
 ```
-bin/Release/net8.0/
+bin/Release/net9.0/
 ├── MovieSplitter.dll
 └── MovieSplitter.pdb       ← optional, include for readable stack traces
 ```
@@ -97,7 +97,7 @@ dotnet build -c Release
 Jellyfin expects plugin releases as a zip with the DLL at the top level (not nested in a subfolder):
 
 ```bash
-cd bin/Release/net8.0
+cd bin/Release/net9.0
 zip MovieSplitter_1.0.0.0.zip MovieSplitter.dll
 ```
 
@@ -222,7 +222,7 @@ mkdir -p /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0
 **3. Copy the DLL**
 
 ```bash
-cp bin/Release/net8.0/MovieSplitter.dll \
+cp bin/Release/net9.0/MovieSplitter.dll \
    /var/lib/jellyfin/plugins/MovieSplitter_1.0.0.0/
 ```
 
@@ -461,46 +461,6 @@ Probes an Ollama server to verify connectivity. Used by the Settings page "Test 
 
 ---
 
-## Project structure
-
-```
-MovieSplitter/
-├── Plugin.cs                          IPlugin + IHasWebPages
-├── PluginConfiguration.cs             Serialised settings (stored as XML by Jellyfin)
-├── ServiceRegistration.cs             DI registrations for the Jellyfin host
-│
-├── Api/
-│   └── MovieSplitterController.cs    REST endpoints (/MovieSplitter/*)
-│
-├── Configuration/
-│   ├── configPage.html               Dashboard settings UI (embedded resource)
-│   └── detailPagePlugin.js           Client-side detail page + context menu injection
-│
-├── Detection/
-│   ├── IBoundaryDetector.cs          Adapter interface
-│   ├── DetectorMode.cs               Heuristic / Ollama / Composite enum
-│   ├── CueWordMatcher.cs             Regex cue-word scanner
-│   ├── HeuristicBoundaryDetector.cs  Silence gap + cue-word implementation
-│   ├── CompositeBoundaryDetector.cs  Multi-detector result merger (15 s collapse window)
-│   ├── BoundaryDetectorFactory.cs    Selects correct implementation from config
-│   └── Ollama/
-│       ├── OllamaClient.cs           HTTP client for Ollama /api/generate
-│       └── OllamaBoundaryDetector.cs LLM-based implementation with automatic fallback
-│
-├── Splitting/
-│   └── FfmpegSplitter.cs             Lossless remux via ffmpeg -c copy -map 0
-│
-├── Subtitle/
-│   ├── SubtitleCue.cs                Record: Start, End, Text
-│   ├── SrtParser.cs                  SRT file parser
-│   └── SubtitleLoader.cs             Sidecar discovery + embedded track extraction
-│
-└── Tasks/
-    └── SplitMovieTask.cs             IScheduledTask orchestrator (full library scan)
-```
-
----
-
 ## Troubleshooting
 
 **Plugin does not appear in Dashboard → My Plugins**
@@ -511,7 +471,7 @@ Confirm the DLL is in a correctly named subfolder (`MovieSplitter_1.0.0.0/`). Ch
 journalctl -u jellyfin -n 100 | grep -i "moviesplitter\|plugin"
 ```
 
-Ensure the DLL targets `net8.0` and your Jellyfin server is version 10.9 or later.
+Ensure the DLL targets `net9.0` and your Jellyfin server is version 10.9 or later.
 
 ---
 

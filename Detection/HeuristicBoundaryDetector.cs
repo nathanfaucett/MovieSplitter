@@ -1,3 +1,4 @@
+using J2N.Collections.ObjectModel;
 using Microsoft.Extensions.Logging;
 using MovieSplitter.Subtitle;
 
@@ -7,7 +8,7 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
 {
     public string Name => "Heuristic";
 
-    private static readonly TimeSpan BoundaryWindow =
+    public static readonly TimeSpan BoundaryWindow =
         TimeSpan.FromMinutes(10);
 
     private readonly PluginConfiguration _config;
@@ -21,116 +22,265 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
         _logger = logger;
     }
 
-    public Task<IReadOnlyList<TimeSpan>> DetectAsync(
+    public Task<Boundaries> DetectAsync(
         IReadOnlyList<SubtitleCue> cues,
         TimeSpan totalDuration,
         CancellationToken ct = default)
     {
-        var candidates = FindCandidates(cues);
+        var credits = DetectCredits(_logger, cues, totalDuration);
+        var candidates = FindCandidates(_logger, cues, totalDuration, TimeSpan.FromMinutes(_config.TargetEpisodeMinutes), BoundaryWindow, credits);
 
-        var filtered = BalanceEpisodes(
-            candidates,
-            totalDuration);
+        var creditsDuration = credits is not null
+            ? credits.Value.Item2 - credits.Value.Item1
+            : TimeSpan.Zero;
+        var minEpisodes = (int)Math.Floor((totalDuration.TotalMinutes - creditsDuration.TotalMinutes) /
+            _config.TargetEpisodeMinutes);
 
-        return Task.FromResult<IReadOnlyList<TimeSpan>>(filtered);
-    }
+        var boundaries = new List<TimeSpan>();
+        var loopLimit = Math.Max(minEpisodes * 2, candidates.Count);
+        var loopCount = 0;
 
-    private List<CandidateBoundary> FindCandidates(
-        IReadOnlyList<SubtitleCue> cues)
-    {
-        var results = new List<CandidateBoundary>();
-
-        var silenceThreshold =
-            TimeSpan.FromSeconds(_config.SilenceThresholdSeconds);
-
-        for (int i = 1; i < cues.Count; i++)
+        while (boundaries.Count < minEpisodes && candidates.Count > 0 && loopCount < loopLimit)
         {
-            var gap = cues[i].Start - cues[i - 1].End;
+            loopCount++;
+            var candidate = candidates[0];
 
-            if (gap < silenceThreshold)
+            if (boundaries.Any(b => Math.Abs((b - candidate.Time).TotalMinutes) < BoundaryWindow.TotalMinutes))
                 continue;
 
-            var midpoint = cues[i - 1].End + gap / 2;
+            candidates.RemoveAt(0);
+            boundaries.Add(candidate.Time);
+        }
 
-            results.Add(new CandidateBoundary
+        return Task.FromResult(new Boundaries(boundaries, credits));
+    }
+
+    private static readonly TimeSpan CandidateGapThreshold =
+        TimeSpan.FromSeconds(20);
+
+    private static readonly TimeSpan StrongGapThreshold =
+        TimeSpan.FromSeconds(60);
+
+    public enum Confidence
+    {
+        Low,
+        Medium,
+        Strong
+    }
+
+    public record Candidate(
+        TimeSpan Time,
+        Confidence Strength);
+
+    public static List<Candidate> FindCandidates(
+        ILogger _logger,
+        IReadOnlyList<SubtitleCue> cues,
+        TimeSpan totalDuration,
+        TimeSpan targetEpisode,
+        TimeSpan targetWindowRange,
+        (TimeSpan, TimeSpan)? credits)
+    {
+        var results = new List<Candidate>();
+        var actualTotalDuration = totalDuration - (credits?.Item2 - credits?.Item1 ?? TimeSpan.Zero);
+        var adjustedTargetEpisode = TimeSpan.FromMinutes(totalDuration.TotalMinutes / Math.Round(totalDuration.TotalMinutes / targetEpisode.TotalMinutes));
+
+        for (
+            var target = adjustedTargetEpisode;
+            target < actualTotalDuration;
+            target += adjustedTargetEpisode)
+        {
+            var windowStart = target - targetWindowRange;
+            var windowEnd = target + targetWindowRange;
+
+            _logger.LogInformation(
+                "[Prod] scanning target={Target} window={Start}-{End}",
+                target,
+                windowStart,
+                windowEnd);
+
+            Candidate? best = null;
+
+            for (int i = 0; i < cues.Count - 1; i++)
             {
-                Time = midpoint,
-                SilenceGap = gap
-            });
+                var cur = cues[i];
+                var next = cues[i + 1];
 
-            _logger.LogDebug(
-                "[Heuristic] Silence gap {Gap:g} -> candidate at {Time:g}",
-                gap,
-                midpoint);
+                // Fast skips
+                if (cur.End < windowStart)
+                    continue;
+
+                if (cur.Start > windowEnd)
+                    break;
+
+                var gap = next.Start - cur.End;
+
+                TimeSpan? candidateTime = null;
+                Confidence confidence = Confidence.Low;
+
+                // Strong pause
+                if (gap >= StrongGapThreshold)
+                {
+                    candidateTime = cur.End;
+                    confidence = Confidence.Strong;
+                }
+                // Medium pause
+                else if (gap >= CandidateGapThreshold)
+                {
+                    candidateTime = cur.End;
+                    confidence = Confidence.Medium;
+                }
+                // Boundary text
+                else if (IsBoundaryText(cur.Text, next.Text))
+                {
+                    candidateTime = cur.End;
+                    confidence = Confidence.Strong;
+                }
+
+                if (candidateTime is null)
+                    continue;
+
+                // Skip credits
+                if (credits is not null &&
+                    candidateTime >= credits?.Item1)
+                {
+                    continue;
+                }
+
+                var distance =
+                    Math.Abs((candidateTime.Value - target).TotalSeconds);
+
+                if (best is null)
+                {
+                    best = new Candidate(
+                        candidateTime.Value,
+                        confidence);
+
+                    continue;
+                }
+
+                var bestDistance =
+                    Math.Abs((best.Time - target).TotalSeconds);
+
+                if (confidence > best.Strength ||
+                    (confidence == best.Strength &&
+                     distance < bestDistance))
+                {
+                    best = new Candidate(
+                        candidateTime.Value,
+                        confidence);
+                }
+            }
+
+            if (best is not null)
+            {
+                _logger.LogInformation(
+                    "[Prod] selected candidate target={Target} actual={Actual} strength={Strength}",
+                    target,
+                    best.Time,
+                    best.Strength);
+
+                results.Add(best);
+            }
         }
 
         return results
+            .DistinctBy(x => x.Time)
             .OrderBy(x => x.Time)
             .ToList();
     }
 
-    private IReadOnlyList<TimeSpan> BalanceEpisodes(
-        List<CandidateBoundary> candidates,
-        TimeSpan totalDuration)
+    public static TimeSpan FindNearestTarget(
+        TimeSpan time,
+        TimeSpan episode)
     {
-        if (candidates.Count == 0)
-            return [];
+        var n =
+            Math.Round(time.TotalSeconds / episode.TotalSeconds);
 
-        var targetEpisode =
-            TimeSpan.FromMinutes(_config.TargetEpisodeMinutes);
-
-        var result = new List<TimeSpan>();
-
-        var currentStart = TimeSpan.Zero;
-
-        while (true)
-        {
-            var targetBoundary = currentStart + targetEpisode;
-
-            var nearby = candidates
-                .Where(c =>
-                    c.Time > currentStart &&
-                    c.Time >= targetBoundary - BoundaryWindow &&
-                    c.Time <= targetBoundary + BoundaryWindow)
-                .ToList();
-
-            if (nearby.Count == 0)
-            {
-                nearby = candidates
-                    .Where(c => c.Time > currentStart)
-                    .Take(5)
-                    .ToList();
-            }
-
-            if (nearby.Count == 0)
-                break;
-
-            var best = nearby
-                .OrderBy(c =>
-                    Math.Abs((c.Time - targetBoundary).TotalSeconds))
-                .ThenByDescending(c => c.SilenceGap)
-                .First();
-
-            // Don't create a tiny tail episode
-            if (totalDuration - best.Time < targetEpisode / 2)
-                break;
-
-            result.Add(best.Time);
-
-            _logger.LogDebug(
-                "[Heuristic] Selected boundary at {Time:g}",
-                best.Time);
-
-            currentStart = best.Time;
-        }
-
-        return result;
+        return TimeSpan.FromSeconds(
+            n * episode.TotalSeconds);
     }
 
-    private sealed class CandidateBoundary
+    private static bool IsBoundaryText(
+        string a,
+        string b)
     {
-        public required TimeSpan Time { get; init; }
+        var t = (a + " " + b).ToLowerInvariant();
 
-        public required TimeSpan SilenceGap { get; init; }
+        return t.Contains("previously on") ||
+               t.Contains("to be continued") ||
+               t.Contains("next time") ||
+               t.Contains("episode");
+    }
+
+    public static (TimeSpan, TimeSpan)? DetectCredits(
+        ILogger _logger,
+        IReadOnlyList<SubtitleCue> cues,
+        TimeSpan totalDuration)
+    {
+        // Only search final 25% of media
+        var minimumCreditStart =
+            TimeSpan.FromSeconds(totalDuration.TotalSeconds * 0.75);
+
+        for (int i = 0; i < cues.Count; i++)
+        {
+            if (cues[i].Start < minimumCreditStart)
+                continue;
+
+            if (!IsCreditText(cues[i].Text))
+                continue;
+
+            var start = cues[i].Start;
+            var end = start;
+
+            int matches = 0;
+
+            for (int j = i; j < cues.Count; j++)
+            {
+                if (IsCreditText(cues[j].Text))
+                {
+                    matches++;
+                    end = cues[j].End;
+                }
+                else
+                {
+                    // tolerate tiny gaps
+                    if (j + 1 < cues.Count &&
+                        cues[j + 1].Start - cues[j].End <
+                        TimeSpan.FromSeconds(10))
+                    {
+                        continue;
+                    }
+
+                    break;
+                }
+            }
+
+            // Require sustained credits
+            if (matches >= 5 &&
+                (end - start) > TimeSpan.FromSeconds(45))
+            {
+                _logger.LogInformation(
+                    "[Prod] detected credits at {Start}-{End}",
+                    start,
+                    end);
+
+                return (start, end);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsCreditText(string text)
+    {
+        text = text.ToLowerInvariant();
+
+        return text.Contains("credits") ||
+               text.Contains("cast") ||
+               text.Contains("written by") ||
+               text.Contains("directed by") ||
+               text.Contains("produced by") ||
+               text.Contains("starring") ||
+               text.Contains("music by");
     }
 }

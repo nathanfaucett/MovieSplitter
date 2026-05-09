@@ -15,8 +15,4 @@ public class PluginConfiguration : BasePluginConfiguration
 
     // ── Detector selection ────────────────────────────────────────────────────
     public DetectorMode DetectorMode { get; set; } = DetectorMode.Heuristic;
-
-    // ── Output settings ───────────────────────────────────────────────────────
-    public string OutputSubfolder { get; set; } = "Episodes";
-    public string SubtitleLanguage { get; set; } = "en";
 }

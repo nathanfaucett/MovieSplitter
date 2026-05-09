@@ -63,16 +63,6 @@
                 </div>
 
                 <div class="inputContainer">
-                    <label class="inputLabel" for="outputSubfolder">Output subfolder name</label>
-                    <input type="text" id="outputSubfolder" class="emby-input" />
-                </div>
-
-                <div class="inputContainer">
-                    <label class="inputLabel" for="subtitleLanguage">Subtitle language code</label>
-                    <input type="text" id="subtitleLanguage" class="emby-input" placeholder="eng" maxlength="3" />
-                </div>
-
-                <div class="inputContainer">
                     <button id="btnSave" class="emby-button button-submit">Save settings</button>
                 </div>
 
@@ -89,8 +79,6 @@
                     document.getElementById('targetEpisodeMinutes').value = res.TargetEpisodeMinutes ?? 30;
                     document.getElementById('ollamaUrl').value = res.OllamaUrl ?? 'http://host.docker.internal:11434';
                     document.getElementById('ollamaModel').value = res.OllamaModel ?? 'gemma4:e2b';
-                    document.getElementById('outputSubfolder').value = res.OutputSubfolder ?? 'Episodes';
-                    document.getElementById('subtitleLanguage').value = res.SubtitleLanguage ?? 'en';
                 }
 
                 function collectConfig() {
@@ -100,8 +88,6 @@
                         TargetEpisodeMinutes: Number.parseFloat(document.getElementById('targetEpisodeMinutes').value),
                         OllamaUrl: document.getElementById('ollamaUrl').value.trim(),
                         OllamaModel: document.getElementById('ollamaModel').value.trim(),
-                        OutputSubfolder: document.getElementById('outputSubfolder').value.trim(),
-                        SubtitleLanguage: document.getElementById('subtitleLanguage').value.trim(),
                     };
                 }
 
