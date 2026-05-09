@@ -63,7 +63,7 @@ public class FfmpegSplitter
         var segments = new List<EpisodeSegment>();
 
         var safeName = string.Concat(seriesName.Select(c =>
-            Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+            Path.GetInvalidFileNameChars().Contains(c) ? ' ' : c)).Trim(' ', '.', '_', '-');
 
         for (int i = 0; i < points.Count; i++)
         {

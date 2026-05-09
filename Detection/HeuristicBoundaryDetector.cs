@@ -202,10 +202,10 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
         if (cues.Count == 0)
             return null;
 
-        var last = cues[^1];
+        var last = cues[cues.Count - 1];
 
         // must be near end of media
-        var threshold = TimeSpan.FromSeconds(totalDuration.TotalSeconds * 0.80);
+        var threshold = TimeSpan.FromSeconds(totalDuration.TotalSeconds * 0.90);
 
         if (last.Start < threshold)
             return null;
