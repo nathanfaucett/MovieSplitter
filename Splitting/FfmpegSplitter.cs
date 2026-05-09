@@ -120,28 +120,66 @@ public class FfmpegSplitter
     }
 
     private async Task CreateEpisodeWithCreditsAsync(
-        string inputPath, TimeSpan epStart, TimeSpan epEnd,
-        TimeSpan credStart, TimeSpan credEnd, string finalPath, CancellationToken ct)
+    string inputPath,
+    TimeSpan epStart,
+    TimeSpan epEnd,
+    TimeSpan credStart,
+    TimeSpan credEnd,
+    string finalPath,
+    CancellationToken ct)
     {
-        var main = Path.Combine(Path.GetTempPath(), $"main-{Guid.NewGuid():N}{Path.GetExtension(inputPath)}");
-        var cred = Path.Combine(Path.GetTempPath(), $"cred-{Guid.NewGuid():N}{Path.GetExtension(inputPath)}");
-        var concatTxt = Path.Combine(Path.GetTempPath(), $"concat-{Guid.NewGuid():N}.txt");
+        var mainTs = Path.Combine(Path.GetTempPath(), $"main-{Guid.NewGuid():N}.ts");
+        var credTs = Path.Combine(Path.GetTempPath(), $"cred-{Guid.NewGuid():N}.ts");
 
         try
         {
-            await RunFfmpegAsync($"-ss {epStart:hh\\:mm\\:ss\\.fff} -to {epEnd:hh\\:mm\\:ss\\.fff} -i \"{inputPath}\" -c copy \"{main}\"", ct);
-            await RunFfmpegAsync($"-ss {credStart:hh\\:mm\\:ss\\.fff} -to {credEnd:hh\\:mm\\:ss\\.fff} -i \"{inputPath}\" -c copy \"{cred}\"", ct);
+            // Main episode
+            await RunFfmpegAsync(
+                $"-y -ss {epStart:hh\\:mm\\:ss\\.fff} -to {epEnd:hh\\:mm\\:ss\\.fff} " +
+                $"-i \"{inputPath}\" -map 0 -c copy -bsf:v h264_mp4toannexb -f mpegts \"{mainTs}\"", ct);
 
-            await File.WriteAllTextAsync(concatTxt,
-                $"file '{main.Replace("\\", "/")}'\nfile '{cred.Replace("\\", "/")}'\n", ct);
+            // Credits
+            await RunFfmpegAsync(
+                $"-y -ss {credStart:hh\\:mm\\:ss\\.fff} -to {credEnd:hh\\:mm\\:ss\\.fff} " +
+                $"-i \"{inputPath}\" -map 0 -c copy -bsf:v h264_mp4toannexb -f mpegts \"{credTs}\"", ct);
 
-            await RunFfmpegAsync($"-f concat -safe 0 -i \"{concatTxt}\" -c copy \"{finalPath}\"", ct);
+            // Concat — only apply aac_adtstoasc if audio is AAC
+            var bsfAudio = IsAacAudio(inputPath) ? "-bsf:a aac_adtstoasc" : "";
+
+            await RunFfmpegAsync(
+                $"-y -i \"concat:{mainTs}|{credTs}\" -c copy {bsfAudio} \"{finalPath}\"", ct);
         }
         finally
         {
-            TryDelete(main);
-            TryDelete(cred);
-            TryDelete(concatTxt);
+            TryDelete(mainTs);
+            TryDelete(credTs);
+        }
+    }
+
+    private bool IsAacAudio(string inputPath)
+    {
+        try
+        {
+            using var proc = new System.Diagnostics.Process();
+            proc.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _ffmpegPath,
+                Arguments = $"-i \"{inputPath}\" -hide_banner",
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            proc.Start();
+            var output = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+
+            // Look for AAC in the audio stream (more reliable than codec name sometimes)
+            return output.Contains("Audio: aac", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false; // safer to omit the filter than to crash
         }
     }
 

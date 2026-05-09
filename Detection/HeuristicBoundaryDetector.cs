@@ -129,12 +129,6 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
                     candidateTime = cur.End;
                     confidence = Confidence.Medium;
                 }
-                // Boundary text
-                else if (IsBoundaryText(cur.Text, next.Text))
-                {
-                    candidateTime = cur.End;
-                    confidence = Confidence.Strong;
-                }
 
                 if (candidateTime is null)
                     continue;
@@ -200,87 +194,26 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
             n * episode.TotalSeconds);
     }
 
-    private static bool IsBoundaryText(
-        string a,
-        string b)
+    public static (TimeSpan Start, TimeSpan End)? DetectCredits(
+    ILogger logger,
+    IReadOnlyList<SubtitleCue> cues,
+    TimeSpan totalDuration)
     {
-        var t = (a + " " + b).ToLowerInvariant();
+        if (cues.Count == 0)
+            return null;
 
-        return t.Contains("previously on") ||
-               t.Contains("to be continued") ||
-               t.Contains("next time") ||
-               t.Contains("episode");
-    }
+        var last = cues[^1];
 
-    public static (TimeSpan, TimeSpan)? DetectCredits(
-        ILogger _logger,
-        IReadOnlyList<SubtitleCue> cues,
-        TimeSpan totalDuration)
-    {
-        // Only search final 25% of media
-        var minimumCreditStart =
-            TimeSpan.FromSeconds(totalDuration.TotalSeconds * 0.75);
+        // must be near end of media
+        var threshold = TimeSpan.FromSeconds(totalDuration.TotalSeconds * 0.80);
 
-        for (int i = 0; i < cues.Count; i++)
-        {
-            if (cues[i].Start < minimumCreditStart)
-                continue;
+        if (last.Start < threshold)
+            return null;
 
-            if (!IsCreditText(cues[i].Text))
-                continue;
+        logger.LogInformation(
+            "[Credits] using final subtitle as boundary at {End}",
+            last.End);
 
-            var start = cues[i].Start;
-            var end = start;
-
-            int matches = 0;
-
-            for (int j = i; j < cues.Count; j++)
-            {
-                if (IsCreditText(cues[j].Text))
-                {
-                    matches++;
-                    end = cues[j].End;
-                }
-                else
-                {
-                    // tolerate tiny gaps
-                    if (j + 1 < cues.Count &&
-                        cues[j + 1].Start - cues[j].End <
-                        TimeSpan.FromSeconds(10))
-                    {
-                        continue;
-                    }
-
-                    break;
-                }
-            }
-
-            // Require sustained credits
-            if (matches >= 5 &&
-                (end - start) > TimeSpan.FromSeconds(45))
-            {
-                _logger.LogInformation(
-                    "[Prod] detected credits at {Start}-{End}",
-                    start,
-                    end);
-
-                return (start, end);
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsCreditText(string text)
-    {
-        text = text.ToLowerInvariant();
-
-        return text.Contains("credits") ||
-               text.Contains("cast") ||
-               text.Contains("written by") ||
-               text.Contains("directed by") ||
-               text.Contains("produced by") ||
-               text.Contains("starring") ||
-               text.Contains("music by");
+        return (last.End, totalDuration);
     }
 }
