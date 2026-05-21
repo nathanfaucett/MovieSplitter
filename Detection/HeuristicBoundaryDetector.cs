@@ -23,17 +23,21 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
         _chapterManager = chapterManager;
     }
 
-    public Task<Boundaries> DetectAsync(
+    public async Task<Boundaries> DetectAsync(
         Movie item,
         IReadOnlyList<SubtitleCue> cues,
         TimeSpan totalDuration,
         CancellationToken ct = default)
     {
-        var credits =
-            BoundaryDetectionHelper.DetectCredits(
-                _logger,
-                cues,
-                totalDuration);
+        var ffmpegPath = Plugin.FindFfmpeg(_logger);
+
+        var credits = await BoundaryDetectionHelper.DetectCreditsAsync(
+            _logger,
+            ffmpegPath,
+            item.Path,
+            cues,
+            totalDuration,
+            ct);
 
         var targetEpisode =
             TimeSpan.FromMinutes(
@@ -55,7 +59,6 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
             .OrderBy(x => x)
             .ToList();
 
-        return Task.FromResult(
-            new Boundaries(boundaries, credits));
+        return new Boundaries(boundaries, credits);
     }
 }

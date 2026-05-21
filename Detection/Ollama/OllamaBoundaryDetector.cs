@@ -45,11 +45,15 @@ public class OllamaBoundaryDetector : IBoundaryDetector
                 Array.Empty<TimeSpan>(),
                 null);
 
-        var credits =
-            BoundaryDetectionHelper.DetectCredits(
-                _logger,
-                cues,
-                totalDuration);
+        var ffmpegPath = Plugin.FindFfmpeg(_logger);
+
+        var credits = await BoundaryDetectionHelper.DetectCreditsAsync(
+            _logger,
+            ffmpegPath,
+            item.Path,
+            cues,
+            totalDuration,
+            ct);
 
         var targetEpisode =
             TimeSpan.FromMinutes(

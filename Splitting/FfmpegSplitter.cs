@@ -13,35 +13,10 @@ public class FfmpegSplitter
     private readonly string _ffmpegPath;
     private readonly ILogger _logger;
 
-    public FfmpegSplitter(string ffmpegPath, ILogger logger)
+    public FfmpegSplitter(ILogger logger)
     {
         _logger = logger;
-        _ffmpegPath = FindFfmpeg(ffmpegPath);
-    }
-
-    private string FindFfmpeg(string ffmpegPath)
-    {
-        var candidates = new[]
-        {
-            ffmpegPath,
-            "/usr/lib/jellyfin-ffmpeg/ffmpeg",
-            "/usr/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/bin/ffmpeg",
-            "ffmpeg"
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                _logger.LogInformation("Using FFmpeg at: {Path}", candidate);
-                return candidate;
-            }
-        }
-
-        _logger.LogWarning("FFmpeg not found in common locations.");
-        return "ffmpeg";
+        _ffmpegPath = Plugin.FindFfmpeg(_logger);
     }
 
     public async Task<IReadOnlyList<EpisodeSegment>> SplitAsync(
@@ -130,24 +105,26 @@ public class FfmpegSplitter
     {
         var mainTs = Path.Combine(Path.GetTempPath(), $"main-{Guid.NewGuid():N}.ts");
         var credTs = Path.Combine(Path.GetTempPath(), $"cred-{Guid.NewGuid():N}.ts");
+        var hasH264Video = HasH264Video(inputPath);
+        var hasAacAudio = HasAacAudio(inputPath);
+
+        var videoBsf = hasH264Video ? "-bsf:v:0 h264_mp4toannexb" : string.Empty;
+        var audioBsf = hasAacAudio ? "-bsf:a aac_adtstoasc" : string.Empty;
 
         try
         {
-            // Main episode
+            // Map primary video + all audio/subtitle/data streams; this excludes attached cover-art video streams.
             await RunFfmpegAsync(
                 $"-y -ss {epStart:hh\\:mm\\:ss\\.fff} -to {epEnd:hh\\:mm\\:ss\\.fff} " +
-                $"-i \"{inputPath}\" -map 0 -c copy -bsf:v h264_mp4toannexb -f mpegts \"{mainTs}\"", ct);
+                $"-i \"{inputPath}\" -map 0:v:0 -map 0:a? -map 0:s? -map 0:d? -c copy {videoBsf} -f mpegts \"{mainTs}\"", ct);
 
             // Credits
             await RunFfmpegAsync(
                 $"-y -ss {credStart:hh\\:mm\\:ss\\.fff} -to {credEnd:hh\\:mm\\:ss\\.fff} " +
-                $"-i \"{inputPath}\" -map 0 -c copy -bsf:v h264_mp4toannexb -f mpegts \"{credTs}\"", ct);
-
-            // Concat — only apply aac_adtstoasc if audio is AAC
-            var bsfAudio = IsAacAudio(inputPath) ? "-bsf:a aac_adtstoasc" : "";
+                $"-i \"{inputPath}\" -map 0:v:0 -map 0:a? -map 0:s? -map 0:d? -c copy {videoBsf} -f mpegts \"{credTs}\"", ct);
 
             await RunFfmpegAsync(
-                $"-y -i \"concat:{mainTs}|{credTs}\" -c copy {bsfAudio} \"{finalPath}\"", ct);
+                $"-y -i \"concat:{mainTs}|{credTs}\" -c copy {audioBsf} \"{finalPath}\"", ct);
         }
         finally
         {
@@ -156,7 +133,13 @@ public class FfmpegSplitter
         }
     }
 
-    private bool IsAacAudio(string inputPath)
+    private bool HasAacAudio(string inputPath)
+        => InputContains(inputPath, "Audio: aac");
+
+    private bool HasH264Video(string inputPath)
+        => InputContains(inputPath, "Video: h264");
+
+    private bool InputContains(string inputPath, string token)
     {
         try
         {
@@ -174,8 +157,7 @@ public class FfmpegSplitter
             var output = proc.StandardError.ReadToEnd();
             proc.WaitForExit();
 
-            // Look for AAC in the audio stream (more reliable than codec name sometimes)
-            return output.Contains("Audio: aac", StringComparison.OrdinalIgnoreCase);
+            return output.Contains(token, StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

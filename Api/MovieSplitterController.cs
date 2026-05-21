@@ -118,9 +118,7 @@ public class MovieSplitterController : ControllerBase
 
         _logger.LogInformation("Output locations {Locations}", string.Join(", ", outputDirs));
 
-        // ── 1. Split ──────────────────────────────────────────────────────────
-        var ffmpegPath = Plugin.Instance!.GetFfmpegPath();
-        var splitter = new FfmpegSplitter(ffmpegPath, _logger);
+        var splitter = new FfmpegSplitter(_logger);
         _logger.LogInformation("Starting ffmpeg");
         var segments = await splitter.SplitAsync(
             movie.Path, boundaries.StartTimes, boundaries.Credits,

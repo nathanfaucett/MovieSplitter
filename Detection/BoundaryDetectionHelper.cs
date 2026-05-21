@@ -290,27 +290,79 @@ public static class BoundaryDetectionHelper
             usable.TotalSeconds / episodeCount);
     }
 
-    public static (TimeSpan Start, TimeSpan End)? DetectCredits(
+    /// <summary>
+    /// Primary credits detection: scans the video for a sustained black frame
+    /// interval using ffmpeg blackdetect. Falls back to subtitle gap heuristic
+    /// if ffmpeg finds nothing.
+    /// </summary>
+    public static async Task<(TimeSpan Start, TimeSpan End)?> DetectCreditsAsync(
+        ILogger logger,
+        string ffmpegPath,
+        string videoPath,
+        IReadOnlyList<SubtitleCue> cues,
+        TimeSpan totalDuration,
+        CancellationToken ct)
+    {
+        // 1. Try exact video-based detection first
+        var videoCredits = await CreditsOnsetDetector.DetectAsync(
+            ffmpegPath, videoPath, totalDuration, cues, logger, ct);
+
+        if (videoCredits is not null)
+            return (videoCredits.Value, totalDuration);
+
+        // 2. Subtitle gap fallback
+        return DetectCreditsFromSubtitles(logger, cues, totalDuration);
+    }
+
+    /// <summary>
+    /// Subtitle-only fallback: finds the largest dialogue gap in the final 25%
+    /// of the film. Less accurate than blackdetect but requires no video scan.
+    /// </summary>
+    public static (TimeSpan Start, TimeSpan End)? DetectCreditsFromSubtitles(
         ILogger logger,
         IReadOnlyList<SubtitleCue> cues,
         TimeSpan totalDuration)
     {
-        if (cues.Count == 0)
+        if (cues.Count < 2)
             return null;
 
-        var last = cues[cues.Count - 1];
+        var searchStart = TimeSpan.FromSeconds(
+            totalDuration.TotalSeconds * 0.75);
 
-        var threshold =
-            TimeSpan.FromSeconds(
-                totalDuration.TotalSeconds * 0.90);
+        TimeSpan bestGapSize = TimeSpan.Zero;
+        TimeSpan bestGapAt = TimeSpan.Zero;
 
-        if (last.Start < threshold)
-            return null;
+        for (int i = 0; i < cues.Count - 1; i++)
+        {
+            var cur = cues[i];
+            var next = cues[i + 1];
 
-        logger.LogInformation(
-            "[Credits] using final subtitle as boundary at {End}",
-            last.End);
+            if (cur.End < searchStart)
+                continue;
 
-        return (last.End, totalDuration);
+            var gap = next.Start - cur.End;
+
+            if (gap <= bestGapSize)
+                continue;
+
+            bestGapSize = gap;
+            bestGapAt = cur.End;
+        }
+
+        if (bestGapSize < TimeSpan.FromSeconds(45))
+        {
+            var last = cues[cues.Count - 1];
+            if (last.Start < TimeSpan.FromSeconds(totalDuration.TotalSeconds * 0.90))
+            {
+                logger.LogInformation("[Credits] subtitle fallback: no gap found — skipping");
+                return null;
+            }
+
+            logger.LogInformation("[Credits] subtitle fallback: using last cue end {End}", last.End);
+            return (last.End, totalDuration);
+        }
+
+        logger.LogInformation("[Credits] subtitle fallback: gap of {Gap:g} at {At}", bestGapSize, bestGapAt);
+        return (bestGapAt, totalDuration);
     }
 }
