@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "1.0.16.0",
+        "changelog": "- Refactor boundary detection: implement async credits detection, enhance ffmpeg integration, and improve logging\n- chore: release v1.0.15.0 [skip ci]",
+        "targetAbi": "10.9.0.0",
+        "sourceUrl": "https://github.com/nathanfaucett/MovieSplitter/releases/download/v1.0.16.0/MovieSplitter_1.0.16.0.zip",
+        "checksum": "b82b1d0aa3bd9701bd91d4457e46b159",
+        "timestamp": "2026-05-21T21:03:00Z"
+      },
+      {
         "version": "1.0.15.0",
         "changelog": "- Refactor MovieSplitterController and plugin.js: enhance code readability, improve logging, and add target episode length functionality\n- chore: release v1.0.14.0 [skip ci]",
         "targetAbi": "10.9.0.0",
