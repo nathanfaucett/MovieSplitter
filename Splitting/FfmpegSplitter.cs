@@ -11,9 +11,9 @@ public record EpisodeSegment(
 public class FfmpegSplitter : IFfmpegSplitter
 {
     private readonly string _ffmpegPath;
-    private readonly ILogger _logger;
+    private readonly ILogger<FfmpegSplitter> _logger;
 
-    public FfmpegSplitter(ILogger logger)
+    public FfmpegSplitter(ILogger<FfmpegSplitter> logger)
     {
         _logger = logger;
         _ffmpegPath = Plugin.FindFfmpeg(_logger);
