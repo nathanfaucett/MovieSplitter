@@ -15,23 +15,27 @@ public class OllamaBoundaryDetector : IBoundaryDetector
     private readonly PluginConfiguration _config;
     private readonly ILogger _logger;
     private readonly IChapterManager _chapterManager;
+    private readonly IBoundaryDetectionService _boundaryDetectionService;
 
     public OllamaBoundaryDetector(
         PluginConfiguration config,
         OllamaClient client,
         ILogger logger,
-        IChapterManager chapterManager)
+        IChapterManager chapterManager,
+        IBoundaryDetectionService boundaryDetectionService)
     {
         _config = config;
         _client = client;
         _logger = logger;
         _chapterManager = chapterManager;
+        _boundaryDetectionService = boundaryDetectionService;
 
         _fallback =
             new HeuristicBoundaryDetector(
                 config,
                 logger,
-                chapterManager);
+                chapterManager,
+                boundaryDetectionService);
     }
 
     public async Task<Boundaries> DetectAsync(
@@ -47,8 +51,7 @@ public class OllamaBoundaryDetector : IBoundaryDetector
 
         var ffmpegPath = Plugin.FindFfmpeg(_logger);
 
-        var credits = await BoundaryDetectionHelper.DetectCreditsAsync(
-            _logger,
+        var credits = await _boundaryDetectionService.DetectCreditsAsync(
             ffmpegPath,
             item.Path,
             cues,
@@ -60,14 +63,13 @@ public class OllamaBoundaryDetector : IBoundaryDetector
                 _config.TargetEpisodeMinutes);
 
         var candidates =
-            BoundaryDetectionHelper.GenerateCandidates(
-                _logger,
+            _boundaryDetectionService.GenerateCandidates(
                 _chapterManager,
                 item,
                 cues,
                 totalDuration,
                 targetEpisode,
-                BoundaryDetectionHelper.BoundaryWindow,
+                BoundaryDetectionService.BoundaryWindow,
                 credits);
 
         try
@@ -82,9 +84,8 @@ public class OllamaBoundaryDetector : IBoundaryDetector
             {
                 ct.ThrowIfCancellationRequested();
 
-                // Chapter-based candidates are trusted
                 if (candidate.Strength ==
-                    BoundaryDetectionHelper.Confidence.Chapter)
+                    BoundaryConfidence.Chapter)
                 {
                     confirmed.Add(candidate.Time);
                     continue;
@@ -92,8 +93,8 @@ public class OllamaBoundaryDetector : IBoundaryDetector
 
                 var context = cues
                     .Where(x =>
-                        x.Start >= candidate.Time - BoundaryDetectionHelper.BoundaryWindow / 2 &&
-                        x.End <= candidate.Time + BoundaryDetectionHelper.BoundaryWindow / 2)
+                        x.Start >= candidate.Time - BoundaryDetectionService.BoundaryWindow / 2 &&
+                        x.End <= candidate.Time + BoundaryDetectionService.BoundaryWindow / 2)
                     .ToList();
 
                 if (context.Count == 0)
@@ -125,7 +126,7 @@ public class OllamaBoundaryDetector : IBoundaryDetector
                 {
                     if (bestTime > TimeSpan.Zero &&
                         Math.Abs((bestTime - candidate.Time).TotalMinutes)
-                        <= BoundaryDetectionHelper.BoundaryWindow.TotalMinutes * 2)
+                        <= BoundaryDetectionService.BoundaryWindow.TotalMinutes * 2)
                     {
                         confirmed.Add(bestTime);
                     }
@@ -138,10 +139,18 @@ public class OllamaBoundaryDetector : IBoundaryDetector
                 .OrderBy(t => t)
                 .ToList();
 
-            if (boundaries.Count == 0)
+            var minEpisodeLength = TimeSpan.FromSeconds(targetEpisode.TotalSeconds * 0.5);
+
+            var filtered = _boundaryDetectionService.EnforceMinimumEpisodeLength(
+                boundaries,
+                minEpisodeLength,
+                totalDuration,
+                credits);
+
+            if (filtered.Count == 0)
             {
                 _logger.LogWarning(
-                    "[Ollama] no validated boundaries → fallback");
+                    "[Ollama] no validated boundaries after filtering → fallback");
 
                 return await _fallback.DetectAsync(
                     item,
@@ -151,7 +160,7 @@ public class OllamaBoundaryDetector : IBoundaryDetector
             }
 
             return new Boundaries(
-                boundaries,
+                filtered,
                 credits);
         }
         catch (Exception ex)

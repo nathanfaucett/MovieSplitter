@@ -8,7 +8,7 @@ public record EpisodeSegment(
     TimeSpan End,
     string OutputPath);
 
-public class FfmpegSplitter
+public class FfmpegSplitter : IFfmpegSplitter
 {
     private readonly string _ffmpegPath;
     private readonly ILogger _logger;

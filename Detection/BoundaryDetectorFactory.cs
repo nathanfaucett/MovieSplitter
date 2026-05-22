@@ -11,7 +11,13 @@ public static class BoundaryDetectorFactory
         ILogger logger,
         IChapterManager chapterManager)
     {
-        var heuristic = new HeuristicBoundaryDetector(config, logger, chapterManager);
+        var boundaryDetectionService = new BoundaryDetectionService(logger);
+
+        var heuristic = new HeuristicBoundaryDetector(
+            config,
+            logger,
+            chapterManager,
+            boundaryDetectionService);
 
         if (string.IsNullOrWhiteSpace(config.OllamaUrl))
         {
@@ -21,7 +27,12 @@ public static class BoundaryDetectorFactory
 
         return config.DetectorMode switch
         {
-            DetectorMode.Ollama => new OllamaBoundaryDetector(config, new OllamaClient(config.OllamaUrl, config.OllamaModel, logger), logger, chapterManager),
+            DetectorMode.Ollama => new OllamaBoundaryDetector(
+                config,
+                new OllamaClient(config.OllamaUrl, config.OllamaModel, logger),
+                logger,
+                chapterManager,
+                boundaryDetectionService),
 
             _ => heuristic
         };

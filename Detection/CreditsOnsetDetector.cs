@@ -19,8 +19,9 @@ public static class CreditsOnsetDetector
     private static readonly double SearchFromFraction = 0.75;
 
     // A scene-change score above this threshold counts as a hard cut or fade.
-    // 0.35 catches most credit onsets; lower = more sensitive (more false positives).
-    private static readonly double SceneChangeThreshold = 0.35;
+    // Higher thresholds detect more drastic changes and reduce false positives.
+    // 0.50 requires stronger scene-change signal (stricter).
+    private static readonly double SceneChangeThreshold = 0.5;
 
     // If dialogue resumes within this window after a candidate cut, the cut
     // is mid-scene, not credits.
@@ -37,6 +38,59 @@ public static class CreditsOnsetDetector
         var searchStart = TimeSpan.FromSeconds(
             totalDuration.TotalSeconds * SearchFromFraction);
 
+        // 1) Try sustained-black detection first (strong signal for credits)
+        var blackArgs =
+            $"-ss {searchStart:hh\\:mm\\:ss\\.fff} " +
+            $"-i \"{videoPath}\" " +
+            $"-vf \"blackdetect=d=2:pix_th=0.98\" " +
+            $"-an -f null -";
+
+        logger.LogInformation("[Credits] scanning for sustained black frames from {Start}", searchStart);
+
+        try
+        {
+            var blackStderr = await RunFfmpegStderrAsync(ffmpegPath, blackArgs, ct);
+            var blackIntervals = ParseBlackIntervals(blackStderr, searchStart, logger);
+
+            if (blackIntervals.Count > 0)
+            {
+                // prefer the last sufficiently-long black interval
+                TimeSpan? candidate = null;
+                var minBlackDuration = TimeSpan.FromSeconds(2);
+
+                for (int i = blackIntervals.Count - 1; i >= 0; i--)
+                {
+                    var iv = blackIntervals[i];
+                    var dur = iv.End - iv.Start;
+                    if (dur >= minBlackDuration)
+                    {
+                        candidate = iv.Start;
+                        break;
+                    }
+                }
+
+                if (candidate is not null)
+                {
+                    bool dialogueResumesAfter = cues.Any(c =>
+                        c.Start > candidate &&
+                        c.Start <= candidate + DialogueResumeWindow);
+
+                    if (!dialogueResumesAfter)
+                    {
+                        logger.LogInformation("[Credits] credits onset (blackdetect) at {T}", candidate);
+                        return candidate;
+                    }
+
+                    logger.LogDebug("[Credits] skipping black interval at {T} — dialogue resumes after it", candidate);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[Credits] ffmpeg blackdetect scan failed — falling back");
+        }
+
+        // 2) Fallback: scene-change based detection
         // Ask ffmpeg to print the timestamp and scene-change score for every
         // frame that exceeds the threshold. -vsync 0 avoids duplicate frames.
         var args =
@@ -128,6 +182,47 @@ public static class CreditsOnsetDetector
         }
 
         results.Sort();
+        return results;
+    }
+
+    private static List<(TimeSpan Start, TimeSpan End)> ParseBlackIntervals(
+        string stderr,
+        TimeSpan searchStart,
+        ILogger logger)
+    {
+        var results = new List<(TimeSpan Start, TimeSpan End)>();
+
+        var starts = Regex.Matches(stderr, @"black_start:([\d.]+)");
+        var ends = Regex.Matches(stderr, @"black_end:([\d.]+)");
+
+        var count = Math.Min(starts.Count, ends.Count);
+
+        for (int i = 0; i < count; i++)
+        {
+            if (!double.TryParse(
+                    starts[i].Groups[1].Value,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var s))
+                continue;
+
+            if (!double.TryParse(
+                    ends[i].Groups[1].Value,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var e))
+                continue;
+
+            var absStart = searchStart + TimeSpan.FromSeconds(s);
+            var absEnd = searchStart + TimeSpan.FromSeconds(e);
+
+            if (absEnd < absStart)
+                continue;
+
+            results.Add((absStart, absEnd));
+        }
+
+        results.Sort((a, b) => a.Start.CompareTo(b.Start));
         return results;
     }
 

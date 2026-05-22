@@ -12,15 +12,18 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
     private readonly PluginConfiguration _config;
     private readonly ILogger _logger;
     private readonly IChapterManager _chapterManager;
+    private readonly IBoundaryDetectionService _boundaryDetectionService;
 
     public HeuristicBoundaryDetector(
         PluginConfiguration config,
         ILogger logger,
-        IChapterManager chapterManager)
+        IChapterManager chapterManager,
+        IBoundaryDetectionService boundaryDetectionService)
     {
         _config = config;
         _logger = logger;
         _chapterManager = chapterManager;
+        _boundaryDetectionService = boundaryDetectionService;
     }
 
     public async Task<Boundaries> DetectAsync(
@@ -31,8 +34,7 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
     {
         var ffmpegPath = Plugin.FindFfmpeg(_logger);
 
-        var credits = await BoundaryDetectionHelper.DetectCreditsAsync(
-            _logger,
+        var credits = await _boundaryDetectionService.DetectCreditsAsync(
             ffmpegPath,
             item.Path,
             cues,
@@ -43,19 +45,34 @@ public class HeuristicBoundaryDetector : IBoundaryDetector
             TimeSpan.FromMinutes(
                 _config.TargetEpisodeMinutes);
 
-        var candidates =
-            BoundaryDetectionHelper.GenerateCandidates(
-                _logger,
+        var initialCandidates =
+            _boundaryDetectionService.GenerateCandidates(
                 _chapterManager,
                 item,
                 cues,
                 totalDuration,
                 targetEpisode,
-                BoundaryDetectionHelper.BoundaryWindow,
+                BoundaryDetectionService.BoundaryWindow,
                 credits);
 
-        var boundaries = candidates
-            .Select(x => x.Time)
+        var candidates = await _boundaryDetectionService.ValidateCandidatesAsync(
+            ffmpegPath,
+            item.Path,
+            initialCandidates,
+            _config.EpisodeReminderSeconds,
+            ct);
+
+        var minEpisodeLength = TimeSpan.FromSeconds(targetEpisode.TotalSeconds * 0.5);
+
+        var candidateTimes = candidates.Select(x => x.Time);
+
+        var filtered = _boundaryDetectionService.EnforceMinimumEpisodeLength(
+            candidateTimes,
+            minEpisodeLength,
+            totalDuration,
+            credits);
+
+        var boundaries = filtered
             .OrderBy(x => x)
             .ToList();
 
