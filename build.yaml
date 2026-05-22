@@ -1,7 +1,7 @@
 ---
 guid: "b2be5f82-6324-4e02-a66c-6da5a160ac45"
 name: "Movie Splitter"
-version: "1.0.16.0"
+version: "1.0.17.0"
 targetAbi: "10.12.0.0"
 framework: "9.0"
 owner: "nathanfaucett"
